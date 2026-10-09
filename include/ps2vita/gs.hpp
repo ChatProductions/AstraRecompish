@@ -25,7 +25,8 @@ struct GsDrawTrace {
 };
 struct GsTextureTrace {
   bool valid = false;
-  unsigned raw_u = 0, raw_v = 0, u = 0, v = 0, format = 0;
+  std::int64_t raw_u = 0, raw_v = 0;
+  unsigned u = 0, v = 0, format = 0;
   std::uint32_t address = 0, raw_texel = 0, expanded_texel = 0;
   std::uint32_t vertex_color = 0, output_color = 0;
 };
@@ -63,7 +64,7 @@ public:
   void clear(std::uint32_t color, std::uint32_t depth = 0xFFFFFFFFu);
   void point(const GsVertex& vertex);
   void line(GsVertex a, GsVertex b);
-  using TextureSampler = std::function<std::uint32_t(unsigned, unsigned,
+  using TextureSampler = std::function<std::uint32_t(std::int64_t, std::int64_t,
                                                      std::uint32_t)>;
   void triangle(GsVertex a, GsVertex b, GsVertex c,
                 const TextureSampler& sample = {},

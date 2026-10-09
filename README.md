@@ -92,7 +92,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **33/33 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **34/34 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -124,11 +124,24 @@ On the matched sprite-50 input surface, nonblack quarter-grid samples fall from
 48.25 to **0.65**. The background is no longer a uniformly blue field, but a
 complete startup animation or retail-game compatibility is **not confirmed**.
 
-Fresh-instance GIF capture/replay reproduces the full 300M-run preview and all
+A follow-up signed-STQ fix stops discarding negative texture coordinates and
+applies REPEAT/CLAMP addressing after bounded signed fixed-point conversion.
+Its owned regression passes **165 checks**; the matching pre-fix core fails 64.
+The same source-surface probe improves modestly to **3,955** nonblack samples
+and **0.62** mean RGB error. Native GS overflow, filtering and full coverage
+remain outside this tested subset.
+
+Matching-version fresh-instance GIF capture/replay reproduces the full 300M-run preview and all
 4 MiB of logical VRAM, making draw-level inspection repeatable without rerunning
 the EE. This is Astra's functional stream, not a hardware timing oracle or a
 PCSX2 GS dump. Reference ST/Q values are post-flush GS data; their precision
 masking explains the apparent low-bit differences, avoiding a false EE/VU fix.
+The corrected-SQRT BIOS run also completes **800 million EE instructions**:
+59,964 GIF submissions, 384,780 triangles and 2,808 lines. Matching-version
+replay reproduces its preview and full logical VRAM exactly. Later diagnostic
+buffers show cloud shapes and a bright text-like row, not a verified complete
+intro. These instruction counts are execution depth, not Vita instructions/sec;
+preview regions can include adjacent buffers and are not display scanout.
 See the [saved cloud investigation](docs/SESSION_2026-10-09.md) and
 [capture/replay instructions](docs/GIF_TRACE.md).
 

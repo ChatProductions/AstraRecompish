@@ -132,7 +132,7 @@ private:
   void set_prim(std::uint64_t value);
   void write_register(std::uint8_t address, std::uint64_t value);
   void write_image(const std::uint8_t* data, std::size_t size);
-  std::uint32_t sample_texture(unsigned context, unsigned u, unsigned v,
+  std::uint32_t sample_texture(unsigned context, std::int64_t raw_u, std::int64_t raw_v,
                                std::uint32_t vertex_color) const;
   void emit_xyz2(std::uint64_t value, bool draw = true);
   void trace_draw(GsTracePrimitive kind, std::uint64_t sequence, unsigned context);

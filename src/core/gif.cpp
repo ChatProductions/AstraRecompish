@@ -249,27 +249,28 @@ void Gif::write_image(const std::uint8_t* data, std::size_t size) {
   local_bytes_written_ += pixels * bytes_per_pixel;
 }
 
-std::uint32_t Gif::sample_texture(unsigned context, unsigned u, unsigned v,
+std::uint32_t Gif::sample_texture(unsigned context, std::int64_t raw_u, std::int64_t raw_v,
                                   std::uint32_t vertex_color) const {
-  const auto raw_u = u, raw_v = v;
   const auto tex0 = tex0_[context & 1u];
   const auto base = static_cast<std::uint32_t>((tex0 & 0x3FFFu) * 256u);
   const auto width = static_cast<unsigned>((tex0 >> 14) & 0x3Fu) * 64u;
   const auto format = static_cast<unsigned>((tex0 >> 20) & 0x3Fu);
   if (width == 0u) return vertex_color;
   const auto clamp = clamp_[context & 1u];
-  const auto address_coordinate = [](unsigned coordinate, unsigned mode,
-                                     unsigned size, unsigned minimum, unsigned maximum) {
+  const auto address_coordinate = [](std::int64_t coordinate, unsigned mode,
+                                     unsigned size, unsigned minimum, unsigned maximum) -> unsigned {
     switch (mode) {
-    case 0: return coordinate & (size - 1u); // REPEAT
-    case 1: return std::min(coordinate, size - 1u); // CLAMP
-    case 2: return std::min(std::max(coordinate, minimum), maximum); // REGION_CLAMP
-    default: return (coordinate & minimum) | maximum; // REGION_REPEAT
+    case 0: return static_cast<std::uint64_t>(coordinate) & (size - 1u); // REPEAT
+    case 1: return static_cast<unsigned>(
+        std::min(std::max<std::int64_t>(coordinate, 0), std::int64_t{size - 1u})); // CLAMP
+    case 2: return static_cast<unsigned>(
+        std::min(std::max<std::int64_t>(coordinate, minimum), std::int64_t{maximum})); // REGION_CLAMP
+    default: return (static_cast<std::uint64_t>(coordinate) & minimum) | maximum; // REGION_REPEAT
     }
   };
-  u = address_coordinate(u, clamp & 3u, 1u << ((tex0 >> 26) & 15u),
+  const auto u = address_coordinate(raw_u, clamp & 3u, 1u << ((tex0 >> 26) & 15u),
                          (clamp >> 4) & 0x3FFu, (clamp >> 14) & 0x3FFu);
-  v = address_coordinate(v, (clamp >> 2) & 3u, 1u << ((tex0 >> 30) & 15u),
+  const auto v = address_coordinate(raw_v, (clamp >> 2) & 3u, 1u << ((tex0 >> 30) & 15u),
                          (clamp >> 24) & 0x3FFu, (clamp >> 34) & 0x3FFu);
   std::uint32_t color = 0;
   std::uint32_t texel_address = 0, raw_texel = 0;
@@ -488,7 +489,7 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
       if ((prim_ & 0x10u) != 0u) {
         const bool fixed_uv = (prim_ & 0x100u) != 0u;
         gs_.triangle(first, second, vertex,
-            [this, context](unsigned u, unsigned v, std::uint32_t color) {
+            [this, context](std::int64_t u, std::int64_t v, std::uint32_t color) {
               return sample_texture(context, u, v, color);
             }, fixed_uv ? 0u : 1u << ((tex0_[context] >> 26) & 15u),
                fixed_uv ? 0u : 1u << ((tex0_[context] >> 30) & 15u));
@@ -642,8 +643,8 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
             std::int64_t{y * 64 - origin_y} * (v1 - v0)) /
             (std::int64_t{span_y} * 16);
         pixel_color = sample_texture(context,
-            static_cast<unsigned>(std::max<std::int64_t>(0, u)),
-            static_cast<unsigned>(std::max<std::int64_t>(0, v)), color);
+            std::max<std::int64_t>(0, u),
+            std::max<std::int64_t>(0, v), color);
       }
       gs_.point({x, y, z, pixel_color});
     }

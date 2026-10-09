@@ -253,13 +253,20 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
           if (q == 0.0 || !std::isfinite(q)) continue;
           const double u = (sa * wa + sb * wb + sc * wc) * st_width / q;
           const double v = (ta * wa + tb * wb + tc * wc) * st_height / q;
-          // Safety boundary for the current unsigned logical-memory sampler.
-          // Negative/nonfinite coordinates and GS clamp modes need a separate
-          // hardware-validated implementation; never cast them with C++ UB.
+          // Preserve signed STQ until texture addressing. Bound the current
+          // logical sampler before any floating-to-integer conversion; this
+          // does not model native GS overflow outside its signed 16.16 range.
           const double max = std::numeric_limits<unsigned>::max();
           if (!std::isfinite(u) || !std::isfinite(v) ||
-              u < 0.0 || v < 0.0 || u > max || v > max) continue;
-          color = sample(static_cast<unsigned>(u), static_cast<unsigned>(v), color);
+              u < -max || v < -max || u > max || v > max) continue;
+          // GS nearest sampling truncates to signed 16.16, then shifts away
+          // its fraction arithmetically. Use division for portable negative
+          // floor semantics, including tiny negatives which truncate to zero.
+          const auto texel = [](double coordinate) {
+            const auto fixed = static_cast<std::int64_t>(coordinate * 65536.0);
+            return fixed >= 0 ? fixed / 65536 : -((-fixed + 65535) / 65536);
+          };
+          color = sample(texel(u), texel(v), color);
         } else {
           color = sample(coordinate(0), coordinate(16), color);
         }

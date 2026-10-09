@@ -182,7 +182,7 @@ void print_gs_pixel_history(const ps2vita::Emulator& emulator,
                   "quarter_xy=%d,%d FRAME=%016llX draw=%s sequence=%llu "
                   "packet=%llu PRIM=%016llX ALPHA=%016llX TEST=%016llX "
                   "TEX0=%016llX TEXA=%016llX CLAMP=%016llX "
-                  "texture_valid=%u texture_format=%u raw_uv=%u,%u uv=%u,%u "
+                  "texture_valid=%u texture_format=%u raw_uv=%lld,%lld uv=%u,%u "
                   "texture_address=%08X raw_texel=%08X expanded_texel=%08X "
                   "vertex_color=%08X texture_output=%08X\n",
           write.address, static_cast<unsigned long long>(index + 1u),
@@ -199,7 +199,8 @@ void print_gs_pixel_history(const ps2vita::Emulator& emulator,
           static_cast<unsigned long long>(draw.texa),
           static_cast<unsigned long long>(draw.clamp),
           unsigned(texture.valid), texture.format,
-          texture.raw_u, texture.raw_v, texture.u, texture.v, texture.address,
+          static_cast<long long>(texture.raw_u), static_cast<long long>(texture.raw_v),
+          texture.u, texture.v, texture.address,
           texture.raw_texel, texture.expanded_texel,
           texture.vertex_color, texture.output_color);
     }

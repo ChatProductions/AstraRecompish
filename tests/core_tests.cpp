@@ -607,7 +607,7 @@ void test_gs_perspective_safety() {
           "Zero and nonfinite Q safely skip unsupported fragments");
   }
   a.q = b.q = c.q = 0x3F800000u;
-  for (const auto bits : {0xBF800000u, 0x7F800000u, 0x7FC00000u, 0x7F7FFFFFu}) {
+  for (const auto bits : {0xFF7FFFFFu, 0x7F800000u, 0x7FC00000u, 0x7F7FFFFFu}) {
     a.st = b.st = c.st = bits;
     unsigned calls = 0;
     gs.triangle(a, b, c, [&](unsigned, unsigned, std::uint32_t) {
