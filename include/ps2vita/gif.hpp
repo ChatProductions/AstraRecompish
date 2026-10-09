@@ -5,6 +5,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
+#include <utility>
 #include <vector>
 
 namespace ps2vita {
@@ -47,6 +49,17 @@ public:
   explicit Gif(Gs& gs);
   ~Gif() { gs_.set_color_target(nullptr, 0u); }
   void reset();
+  // Diagnostic listeners survive reset; ordinals restart with guest state.
+  // Callbacks borrow data synchronously and must not mutate/re-enter this Gif.
+  using SubmissionObserver = std::function<void(std::uint64_t,
+      const std::uint8_t*, std::size_t)>;
+  using TriangleObserver = std::function<void(const GifTriangleRecord&)>;
+  void set_submission_observer(SubmissionObserver observer) {
+    submission_observer_ = std::move(observer);
+  }
+  void set_triangle_observer(TriangleObserver observer) {
+    triangle_observer_ = std::move(observer);
+  }
   void enable_triangle_trace(bool enabled) { trace_triangles_ = enabled; }
   const std::vector<GifTriangleRecord>& triangle_records() const {
     return triangle_records_;
@@ -125,6 +138,8 @@ private:
   void trace_draw(GsTracePrimitive kind, std::uint64_t sequence, unsigned context);
 
   Gs& gs_;
+  SubmissionObserver submission_observer_;
+  TriangleObserver triangle_observer_;
   bool trace_triangles_ = false;
   std::vector<GifTriangleRecord> triangle_records_;
   std::vector<GifTriangleRecord> nondegenerate_triangle_records_;

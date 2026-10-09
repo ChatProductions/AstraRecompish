@@ -30,6 +30,12 @@ public:
   Gs& gs() { return gs_; }
   const Gs& gs() const { return gs_; }
   const Gif& gif() const { return gif_; }
+  void set_gif_submission_observer(Gif::SubmissionObserver observer) {
+    gif_.set_submission_observer(std::move(observer));
+  }
+  void set_gif_triangle_observer(Gif::TriangleObserver observer) {
+    gif_.set_triangle_observer(std::move(observer));
+  }
   void enable_triangle_trace(bool enabled) { gif_.enable_triangle_trace(enabled); }
   void capture_sprite_framebuffer_at(std::uint64_t sequence) {
     gif_.capture_sprite_framebuffer_at(sequence);

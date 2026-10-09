@@ -1,6 +1,7 @@
 #include "ps2vita/emulator.hpp"
 #include "ps2vita/execution_census.hpp"
 #include "ps2vita/framebuffer_dump.hpp"
+#include "ps2vita/gif_trace.hpp"
 #include "ps2vita/gs_display.hpp"
 #include "ps2vita/spu2_adpcm.hpp"
 
@@ -10,8 +11,10 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -138,6 +141,21 @@ const char* gs_primitive_name(ps2vita::GsTracePrimitive kind) {
   }
 }
 
+bool same_diagnostic_path(const char* left, const char* right) {
+  std::error_code error;
+  if (std::filesystem::equivalent(left, right, error)) return true;
+  const auto first = std::filesystem::weakly_canonical(left, error);
+  if (error) return std::string(left) == right;
+  const auto second = std::filesystem::weakly_canonical(right, error);
+  return error ? std::string(left) == right : first == second;
+}
+
+std::string gs_step_snapshot_path(const char* framebuffer_path,
+                                  std::uint64_t step) {
+  return std::string(framebuffer_path) + ".step-" +
+      std::to_string(step) + ".ppm";
+}
+
 void print_gs_pixel_history(const ps2vita::Emulator& emulator,
                              const std::vector<GsPixelHistory>& histories) {
   if (histories.empty()) return;
@@ -191,8 +209,7 @@ void print_gs_pixel_history(const ps2vita::Emulator& emulator,
 bool write_gs_step_snapshot(ps2vita::Emulator& emulator,
                             const char* framebuffer_path, std::uint64_t step,
                             const std::vector<GsPixelHistory>& histories) {
-  const auto path = std::string(framebuffer_path) + ".step-" +
-      std::to_string(step) + ".ppm";
+  const auto path = gs_step_snapshot_path(framebuffer_path, step);
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   const bool written = ps2vita::write_framebuffer_ppm(output, emulator.gs());
   output.close();
@@ -529,7 +546,8 @@ int main(int argc, char** argv) {
         "optional ASTRA_TRACE_SECONDS=1..86400 bounds host runtime and reports progress; 0 disables\n"
         "optional ASTRA_STOP_ON_SPRITE=1 stops after the selected sprite is captured\n"
         "optional ASTRA_GS_WATCH=hex-address[,hex-address...] records up to 16 aligned logical VRAM addresses\n"
-        "optional ASTRA_GS_FRAME_STEPS=decimal-step[,decimal-step...] captures up to 16 increasing draw-target previews; requires FRAMEBUFFER_PPM\n");
+        "optional ASTRA_GS_FRAME_STEPS=decimal-step[,decimal-step...] captures up to 16 increasing draw-target previews; requires FRAMEBUFFER_PPM\n"
+        "optional ASTRA_GIF_TRACE=FILE captures bounded, fresh-instance-reset-starting serialized Astra GIF submissions\n");
     return 2;
   }
 
@@ -639,6 +657,55 @@ int main(int argc, char** argv) {
     }
   }
 
+  const char* gif_trace_path = std::getenv("ASTRA_GIF_TRACE");
+  if (gif_trace_path && (*gif_trace_path == '\0' || std::string(gif_trace_path) == "-")) {
+    std::fputs("ASTRA_GIF_TRACE must name an output file, not an empty path or '-'\n", stderr);
+    return 2;
+  }
+  if (gif_trace_path) {
+    for (const char* other : std::array<const char*, 8>{{
+             argv[1], census_path, framebuffer_path, vif_path,
+             linear_display_path, sprite_capture_path,
+             sprite_source_path, preceding_texture16_path}}) {
+      if (other && same_diagnostic_path(gif_trace_path, other)) {
+        std::fputs("ASTRA_GIF_TRACE must be distinct from BIOS and other output paths\n", stderr);
+        return 2;
+      }
+    }
+  }
+  // Reserve both generated names even if PMODE later skips the display copy.
+  // Preflight every derived path before any diagnostic stream is opened: an
+  // existing symlink/hardlink can alias BIOS, an explicit output, or another
+  // requested snapshot despite having a different spelling.
+  std::vector<std::string> gs_snapshot_paths;
+  for (const auto step : gs_frame_steps) {
+    const auto path = gs_step_snapshot_path(framebuffer_path, step);
+    for (const auto& generated : {path, path + ".linear-display.ppm"}) {
+      for (const char* other : std::array<const char*, 9>{{
+               argv[1], census_path, framebuffer_path, vif_path,
+               linear_display_path, sprite_capture_path, sprite_source_path,
+               preceding_texture16_path, gif_trace_path}}) {
+        if (other && same_diagnostic_path(generated.c_str(), other)) {
+          std::fputs(other == gif_trace_path
+              ? "ASTRA_GIF_TRACE must be distinct from derived GS step snapshot paths\n"
+              : "ASTRA_GS_FRAME_STEPS derived snapshot paths must be distinct from BIOS and explicit output paths\n",
+              stderr);
+          return 2;
+        }
+      }
+      for (const auto& previous : gs_snapshot_paths) {
+        if (same_diagnostic_path(generated.c_str(), previous.c_str())) {
+          std::fputs("ASTRA_GS_FRAME_STEPS derived snapshot paths must be distinct from one another\n",
+                     stderr);
+          return 2;
+        }
+      }
+      gs_snapshot_paths.push_back(generated);
+    }
+  }
+  std::ofstream gif_trace_output;
+  std::unique_ptr<ps2vita::GifTraceWriter> gif_trace_writer;
+
   ps2vita::Emulator emulator;
   emulator.enable_vif_packet_capture(vif_path != nullptr);
   emulator.enable_triangle_trace(true);
@@ -649,6 +716,26 @@ int main(int argc, char** argv) {
   emulator.enable_vif_command_census(true);
   if (sprite_capture_path)
     emulator.capture_sprite_framebuffer_at(sprite_capture_sequence);
+  if (gif_trace_path) {
+    gif_trace_output.open(gif_trace_path, std::ios::binary | std::ios::trunc);
+    if (!gif_trace_output) {
+      std::fprintf(stderr, "could not open ASTRA_GIF_TRACE output: %s\n", gif_trace_path);
+      return 2;
+    }
+    gif_trace_writer = std::make_unique<ps2vita::GifTraceWriter>(gif_trace_output);
+    if (!gif_trace_writer->good()) {
+      std::fprintf(stderr, "could not initialize ASTRA_GIF_TRACE: %s\n",
+          gif_trace_writer->error());
+      return 2;
+    }
+    emulator.set_gif_submission_observer([&](std::uint64_t ordinal,
+                                          const std::uint8_t* data, std::size_t size) {
+      // A failed diagnostic write latches in the writer. Never change the guest
+      // graphics stream or interrupt an in-progress GIF submission to hide it.
+      gif_trace_writer->write(ordinal, emulator.cpu().state().cycles,
+                              emulator.cpu().state().pc, data, size);
+    });
+  }
   std::vector<GsPixelHistory> gs_pixel_histories(gs_watch_addresses.size());
   for (std::size_t index = 0; index < gs_watch_addresses.size(); ++index)
     gs_pixel_histories[index].address = gs_watch_addresses[index];
@@ -1219,6 +1306,30 @@ int main(int argc, char** argv) {
     low_stub_word = current_low_stub_word;
   }
 
+  if (gif_trace_writer) {
+    emulator.set_gif_submission_observer({});
+    const auto& terminal = emulator.cpu().state();
+    const bool finished = gif_trace_writer->finish(terminal.cycles, terminal.pc);
+    gif_trace_output.close();
+    if (!finished || !gif_trace_output) {
+      std::fprintf(stderr, "ASTRA_GIF_TRACE incomplete at safe endpoint: %s (%s)\n",
+          gif_trace_path, gif_trace_writer->error());
+      return 2;
+    }
+    std::printf("gif_trace path=%s records=%llu payload_bytes=%llu terminal_ee_cycle=%llu "
+                "terminal_next_ee_pc=%08X scope=fresh-instance-reset-starting-serialized-astra-gif "
+                "not-pcsx2-dump-not-hardware-timeline\n", gif_trace_path,
+        static_cast<unsigned long long>(gif_trace_writer->record_count()),
+        static_cast<unsigned long long>(gif_trace_writer->payload_bytes()),
+        static_cast<unsigned long long>(terminal.cycles), terminal.pc);
+    std::uint64_t logical_vram_hash = 1469598103934665603ull;
+    for (std::uint32_t address = 0; address < 0x400000u; address += 4u) {
+      logical_vram_hash ^= emulator.gif().read_local32(address);
+      logical_vram_hash *= 1099511628211ull;
+    }
+    std::printf("gif_trace_terminal logical_vram_word_hash=%016llX word_count=1048576\n",
+        static_cast<unsigned long long>(logical_vram_hash));
+  }
   if (host_seconds != 0u)
     std::printf("host_deadline=%u limit_seconds=%u (checked between EE steps)\n",
         unsigned(host_deadline), host_seconds);

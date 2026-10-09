@@ -72,7 +72,7 @@ core is real BIOS execution, not a renamed frontend or a fake compatibility scre
 
 ## Project status
 
-Latest verified research checkpoint: **October 3, 2026**. These are development
+Latest verified research checkpoint: **October 9, 2026**. These are development
 results, not a game-compatibility list or a measured completion percentage.
 
 | Area | Current state |
@@ -92,7 +92,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **29/29 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **33/33 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -110,7 +110,29 @@ speed on physical Vita hardware**. One malformed VU1 PATH1 tag remains rejected.
 Formats, fog, native GS buffer semantics and VU/GIF timing still need work.
 See the [framebuffer-feedback implementation and validation](docs/SESSION_2026-09-21.md).
 
-### Latest pixel-provenance and sprite-coverage milestone
+### Latest cloud-background and EE SQRT milestone
+
+A concrete EE floating-point operand bug flattened the cloud brightness table.
+Correcting SQRT's source register restores the radial color mask: all **714
+exactly geometry-aligned cloud vertices** now match the saved reference RGBA,
+including its 564 black vertices and 15 colors. The owned regression passes
+**42 checks**; the pre-fix core fails 10. Broader PS2 floating-point semantics
+remain incomplete.
+
+On the matched sprite-50 input surface, nonblack quarter-grid samples fall from
+10,240 to **3,951**, versus the reference's 4,031; mean RGB error falls from
+48.25 to **0.65**. The background is no longer a uniformly blue field, but a
+complete startup animation or retail-game compatibility is **not confirmed**.
+
+Fresh-instance GIF capture/replay reproduces the full 300M-run preview and all
+4 MiB of logical VRAM, making draw-level inspection repeatable without rerunning
+the EE. This is Astra's functional stream, not a hardware timing oracle or a
+PCSX2 GS dump. Reference ST/Q values are post-flush GS data; their precision
+masking explains the apparent low-bit differences, avoiding a false EE/VU fix.
+See the [saved cloud investigation](docs/SESSION_2026-10-09.md) and
+[capture/replay instructions](docs/GIF_TRACE.md).
+
+### Pixel-provenance and sprite-coverage milestone
 
 Physical GS pixel watches now identify accepted raster writers, aliased buffers,
 blend inputs/results and sampled texture data without changing the pre-fix BIOS

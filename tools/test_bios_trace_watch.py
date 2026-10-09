@@ -34,7 +34,7 @@ class BiosTraceWatchTests(unittest.TestCase):
                   words=None):
         environment = os.environ.copy()
         for key in ("ASTRA_TRACE_SECONDS", "ASTRA_STOP_ON_SPRITE",
-                    "ASTRA_GS_WATCH", "ASTRA_GS_FRAME_STEPS"):
+                    "ASTRA_GS_WATCH", "ASTRA_GS_FRAME_STEPS", "ASTRA_GIF_TRACE"):
             environment.pop(key, None)
         environment.update(overrides or {})
         rom = self.rom

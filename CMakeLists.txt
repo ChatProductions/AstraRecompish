@@ -178,8 +178,24 @@ else()
   add_executable(gif_sprite_coverage_tests tests/gif_sprite_coverage_tests.cpp)
   target_link_libraries(gif_sprite_coverage_tests PRIVATE ps2core)
   add_test(NAME gif_sprite_coverage_tests COMMAND gif_sprite_coverage_tests)
+  add_executable(gif_trace_tests tests/gif_trace_tests.cpp)
+  target_link_libraries(gif_trace_tests PRIVATE ps2core)
+  add_test(NAME gif_trace_tests COMMAND gif_trace_tests)
+  add_executable(ee_fpu_tests tests/ee_fpu_tests.cpp)
+  target_link_libraries(ee_fpu_tests PRIVATE ps2core)
+  add_test(NAME ee_fpu_tests COMMAND ee_fpu_tests)
   add_executable(ps2bios_trace tools/bios_trace.cpp)
   target_link_libraries(ps2bios_trace PRIVATE ps2core)
+  add_executable(ps2gif_replay tools/gif_replay.cpp)
+  target_link_libraries(ps2gif_replay PRIVATE ps2core)
+  add_test(NAME gif_replay_tool_tests
+    COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_gif_replay.py"
+            "$<TARGET_FILE:ps2gif_replay>" "$<TARGET_FILE:ps2bios_trace>")
+  add_test(NAME cloud_vertex_tool_tests
+    COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
+            "${Python3_EXECUTABLE}" -m unittest discover
+            -s "${CMAKE_CURRENT_SOURCE_DIR}/tools" -p test_compare_cloud_vertices.py)
   add_test(NAME bios_trace_watch_tool_tests
     COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
             "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bios_trace_watch.py"
@@ -210,6 +226,9 @@ else()
     target_compile_options(vif_dma_physical_tests PRIVATE /W4)
     target_compile_options(gs_pixel_watch_tests PRIVATE /W4)
     target_compile_options(gif_sprite_coverage_tests PRIVATE /W4)
+    target_compile_options(gif_trace_tests PRIVATE /W4)
+    target_compile_options(ee_fpu_tests PRIVATE /W4)
+    target_compile_options(ps2gif_replay PRIVATE /W4)
     target_compile_options(ps2bios_trace PRIVATE /W4)
     target_compile_options(ps2vif_replay PRIVATE /W4)
     target_compile_options(aot_benchmark PRIVATE /W4)
@@ -225,6 +244,9 @@ else()
     target_compile_options(vif_dma_physical_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(gs_pixel_watch_tests PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(gif_sprite_coverage_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(gif_trace_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(ee_fpu_tests PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(ps2gif_replay PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(ps2bios_trace PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(ps2vif_replay PRIVATE -Wall -Wextra -Wpedantic)
     target_compile_options(aot_benchmark PRIVATE -Wall -Wextra -Wpedantic)

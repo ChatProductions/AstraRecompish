@@ -88,7 +88,8 @@ void Gif::reset() {
 
 bool Gif::submit(const std::uint8_t* data, std::size_t size) {
   ++packets_submitted_;
-  pending_.insert(pending_.end(), data, data + size);
+  if (submission_observer_) submission_observer_(packets_submitted_, data, size);
+  if (size != 0u) pending_.insert(pending_.end(), data, data + size);
   std::size_t cursor = 0;
   while (cursor + 16u <= pending_.size()) {
     const auto tag_start = cursor;
@@ -449,7 +450,7 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
     }
     if (draw) {
       trace_draw(GsTracePrimitive::Triangle, triangles_emitted_, context);
-      if ((trace_triangles_ && (triangle_records_.size() < 64u ||
+      if (triangle_observer_ || (trace_triangles_ && (triangle_records_.size() < 64u ||
                                nondegenerate_triangle_records_.size() < 64u)) ||
           capture_sprite_enabled_) {
         const GifTriangleRecord record{{vertices_[0], vertices_[1], vertex},
@@ -457,6 +458,7 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
             prim_, xyoffset_[context], scissor_[context], test_[context],
             zbuf_[context], tex0_[context], clamp_[context], frame_[context],
             alpha_[context], triangles_emitted_};
+        if (triangle_observer_) triangle_observer_(record);
         if (trace_triangles_ && triangle_records_.size() < 64u)
           triangle_records_.push_back(record);
         // Host-space area only: this selects useful raster inputs, not proof

@@ -544,7 +544,9 @@ StopReason Cpu::execute(std::uint32_t ins, std::uint32_t pc,
       case 0x01: state_.fpr[fd] = as_bits(s - t); break;
       case 0x02: state_.fpr[fd] = as_bits(s * t); break;
       case 0x03: state_.fpr[fd] = as_bits(s / t); break;
-      case 0x04: state_.fpr[fd] = as_bits(std::sqrt(s)); break;
+      // R5900 SQRT.S fd,ft encodes its unary source in bits 20..16;
+      // bits 15..11 are not the source used by ordinary unary COP1 ops.
+      case 0x04: state_.fpr[fd] = as_bits(std::sqrt(t)); break;
       case 0x05: state_.fpr[fd] = state_.fpr[fs] & 0x7FFFFFFFu; break;
       case 0x06: state_.fpr[fd] = state_.fpr[fs]; break;
       case 0x07: state_.fpr[fd] = state_.fpr[fs] ^ 0x80000000u; break;
