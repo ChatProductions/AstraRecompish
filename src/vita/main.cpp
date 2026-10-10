@@ -1,6 +1,7 @@
 #include "ps2vita/aot.hpp"
 #include "ps2vita/emulator.hpp"
 #include "ps2vita/execution_budget.hpp"
+#include "ps2vita/gs_display_preview.hpp"
 #include "screen.hpp"
 
 #include <psp2/ctrl.h>
@@ -184,7 +185,7 @@ void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
           const ps2vita::AotProbeResult& aot_probe,
           const ps2vita::AotProbeResult& aot_chain_probe,
           const ps2vita::AotBenchmarkResult& benchmark, bool running,
-          bool show_gs) {
+          bool show_gs, bool show_draw_target, ps2vita::GsLinearDisplayPreview& display_preview) {
   constexpr std::uint32_t bg = 0xFF100C18;
   constexpr std::uint32_t panel = 0xFF21182E;
   constexpr std::uint32_t ink = 0xFFF4ECFF;
@@ -192,9 +193,41 @@ void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
   constexpr std::uint32_t accent = 0xFFFF4E9A;
   if (show_gs) {
     screen.clear(0xFF000000);
-    screen.blit_160x112(emu.gs().pixels());
+    char heading[96];
+    char detail[96];
+    if (show_draw_target) {
+      screen.blit_160x112(emu.gs().pixels());
+      std::snprintf(heading, sizeof(heading), "GS DRAW TARGET / L: VIEW / R: RETURN");
+      std::snprintf(detail, sizeof(detail), "FRAME %016llX / NOT THE DISPLAY BUFFER",
+          static_cast<unsigned long long>(emu.gs().color_frame()));
+    } else {
+      const auto status = display_preview.update(emu.memory().read64(0x12000000u),
+          emu.memory().read64(0x12000070u), emu.memory().read64(0x12000090u),
+          [&](std::uint32_t address) { return emu.gif().read_local32(address); });
+      screen.blit_160x112(display_preview.pixels().data());
+      const auto& selected = display_preview.selection();
+      if (selected.circuit != 0u)
+        std::snprintf(heading, sizeof(heading), "GS DISPFB%u LINEAR / L: VIEW / R: RETURN",
+            selected.circuit);
+      else
+        std::snprintf(heading, sizeof(heading), "GS DISPLAY PROBE / L: VIEW / R: RETURN");
+      if (status == ps2vita::GsLinearDisplayStatus::Ready) {
+        std::snprintf(detail, sizeof(detail), "BASE %06X WIDTH %u ORIGIN %u,%u / 640X448 REGION",
+            selected.framebuffer.base_bytes(), selected.framebuffer.width_pixels(),
+            selected.framebuffer.dbx, selected.framebuffer.dby);
+      } else {
+        const char* reason = status == ps2vita::GsLinearDisplayStatus::Disabled ?
+            "PMODE DISABLED" : status == ps2vita::GsLinearDisplayStatus::MultipleCircuits ?
+            "DUAL-CIRCUIT MIXING NOT IMPLEMENTED" :
+            status == ps2vita::GsLinearDisplayStatus::ZeroWidth ? "ZERO BUFFER WIDTH" :
+            "UNSUPPORTED DISPLAY PIXEL FORMAT";
+        std::snprintf(detail, sizeof(detail), "%s / L FOR DRAW-TARGET DIAGNOSTIC", reason);
+      }
+    }
     screen.rect(0, 0, 960, 40, 0xFF100C18);
-    screen.text(18, 10, "GS REFERENCE 160X112 / R TO RETURN", ink, 2);
+    screen.text(18, 10, heading, ink, 2);
+    screen.text(18, 504, detail, dim, 1);
+    screen.text(18, 522, "DIAGNOSTIC ONLY / NOT SCANOUT, FIELDS OR NATIVE GS SWIZZLING", dim, 1);
     screen.present();
     return;
   }
@@ -267,6 +300,10 @@ int main() {
                 aot_probe.interpreter_value, aot_probe.aot_value);
   bool running = false;
   bool show_gs = false;
+  bool show_draw_target = false;
+  // Reused host-only storage, not 72 KiB on the Vita thread's stack. No
+  // per-frame allocation or guest state changes; every update replaces it.
+  static ps2vita::GsLinearDisplayPreview display_preview;
   std::uint32_t previous = 0;
   std::uint64_t next_progress_cycle = kProgressInterval;
   std::uint64_t last_progress_cycle = 0;
@@ -302,6 +339,7 @@ int main() {
 
     if (pressed & SCE_CTRL_SELECT) break;
     if (pressed & SCE_CTRL_RTRIGGER) show_gs = !show_gs;
+    if (show_gs && (pressed & SCE_CTRL_LTRIGGER)) show_draw_target = !show_draw_target;
     if (pressed & SCE_CTRL_TRIANGLE) {
       running = false;
       image.clear();
@@ -370,7 +408,7 @@ int main() {
       }
     }
     draw(screen, emulator, message, aot_probe, aot_chain_probe, benchmark,
-         running, show_gs);
+         running, show_gs, show_draw_target, display_preview);
   }
 
   screen.shutdown();

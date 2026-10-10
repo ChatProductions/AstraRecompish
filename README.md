@@ -93,12 +93,13 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **44/44 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **45/45 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
-quarter-resolution rasterization, PSMCT32/24 targets, and a preview of the active
-draw target. Native GS swizzling, depth-buffer routing, display scanout and
+quarter-resolution rasterization, PSMCT32/24 targets, and diagnostic previews
+of the active draw target or single-circuit selected DISPFB region. Native GS
+swizzling, depth-buffer routing, display scanout and
 broader formats/filtering remain incomplete. Earlier 300-million-step BIOS
 captures showed textured rectangles, not a recognizable intro.
 That earlier feedback-enabled replay changed the image, including blue
@@ -184,6 +185,13 @@ checks every starting address in the 4 MiB graphics memory, including wrapping
 and later writes. A three-trial native-grid PC pair improves submit throughput
 by about 5%; this is not a Vita FPS measurement. See the
 [word-read evidence and sanitizer gates](docs/SESSION_2026-10-10_TEXTURE_WORD_READS.md).
+
+The Vita GS view now defaults to a fixed region from the buffer selected by
+PMODE/DISPFB, instead of the latest drawing FRAME. L switches back to the
+draw-target diagnostic; unsupported display selections blank explicitly.
+The 172-check owned fixture preserves VRAM and draw state. This remains a
+linear-memory region probe, not accurate scanout; see the
+[display-preview contract and saved session](docs/SESSION_2026-10-10_DISPLAY_PREVIEW.md).
 
 ### Cloud-background and EE SQRT milestone
 
@@ -451,8 +459,8 @@ workflow.
    emulated address `0x2000` (the write is covered by the host tests).
 
 Controls: Triangle reloads an ELF, Circle loads `ux0:data/ps2vita/bios.bin`, Cross
-runs/pauses, Square single-steps, R toggles the GS diagnostic, Start resets, and
-Select exits.
+runs/pauses, Square single-steps, R toggles the GS diagnostic, and L within that
+view switches selected DISPFB / active draw target. Start resets; Select exits.
 
 If a correctly sized `bios.bin` is present, PS2Vita discovers and maps it at
 startup and begins executing it automatically. Emulator stops write
