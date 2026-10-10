@@ -47,6 +47,53 @@ quarter-grid-degenerate triangles too; this is not a list of visible pixels.
 It does not capture every GS register. A completion footer distinguishes a
 successful export from a partial file.
 
+## Explicit linear surfaces and full-pixel replay
+
+The active drawing FRAME and the enabled display framebuffer can differ.
+Select a logical surface explicitly, using the raw DISPFB and native region
+dimensions obtained separately from your tracer. Privileged display writes are
+not in this GIF trace; replay does not infer the current circuit or scanout.
+
+```sh
+# Example selection for the locally recorded 800M checkpoint, not a universal
+# BIOS/display setting. Normal replay samples a 160x64 grid from this region.
+build-release/ps2gif_replay build-release/cloud.agf \
+  --linear-framebuffer build-release/region-quarter.ppm \
+  --dispfb 1400 --linear-size 640x256
+
+# Separate host-only graphics library: render one sample per native pixel.
+build-release/ps2gif_replay_native build-release/cloud.agf \
+  --linear-framebuffer build-release/region-native.ppm \
+  --dispfb 1400 --linear-size 640x256
+```
+
+All three linear-selection flags are required together. DISPFB is strict unsigned
+hex (optional `0x` prefix); dimensions are positive decimal `WIDTHxHEIGHT` and
+must be divisible by the build's sample scale. Only PSMCT32/24, a nonzero stride,
+an in-row origin/width and a complete unwrapped region within 4 MiB are accepted.
+Output alias checks include this path. Only read-only logical-VRAM access is
+used, after the entire trace/footer validates; no Gs target is rebound. The log
+states raw selection, origin, stride, native/output dimensions, scale, sampled
+raw-word hash and RGB count. Alpha participates in hashing, not the PPM.
+
+The default/Vita grid remains 160x112, with a 4x4 native tile per sample. The
+separate `ps2gif_replay_native` executable links only the scale-1 Gif/Gs library
+and has a 640x448 viewport. Its selected linear 640x256 output excludes the
+known adjacent-buffer over-read at this checkpoint. It re-rasterizes guest
+geometry and feedback at full pixel density; it is **not an upscale, sharpening
+filter, native GS swizzled-memory implementation or reconstructed scanout**.
+Integer-vertex truncation, filtering and other existing GS approximations remain.
+Different raster grids intentionally have different output/VRAM hashes; compare
+matching versions/grids when checking exact replay reproducibility.
+
+Native triangle TSV X/Y use that build's native pixel grid, while raw XYZ/ST/Q
+remain unchanged. The current cloud comparator validates quarter-grid X/Y and
+will reject native-grid TSV; use the default executable for that comparison.
+Selected-sprite source probes deliberately remain the documented **160x64 grid
+at native 4-pixel spacing**, in both builds. Only the selected-sprite framebuffer
+changes to the native viewport dimensions. These distinctions prevent a grid
+change from masquerading as an architectural or reference-input difference.
+
 ## Compare a reference draw
 
 Given locally obtained PCSX2 software-renderer context and expanded vertex dumps:

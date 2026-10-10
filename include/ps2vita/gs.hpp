@@ -40,8 +40,18 @@ struct GsPixelWrite {
 
 class Gs {
 public:
-  static constexpr int kWidth = 160;
-  static constexpr int kHeight = 112;
+  // The default/Vita backend samples one anchor per 4x4 native tile. A
+  // separately compiled host diagnostic may use scale 1 for a native pixel
+  // grid; every consumer of that library must use the same public definition.
+#if defined(PS2VITA_GS_RASTER_SCALE)
+  static constexpr int kRasterScale = PS2VITA_GS_RASTER_SCALE;
+#else
+  static constexpr int kRasterScale = 4;
+#endif
+  static_assert(kRasterScale == 1 || kRasterScale == 4,
+                "GS diagnostic raster scale must be 1 or 4");
+  static constexpr int kWidth = 640 / kRasterScale;
+  static constexpr int kHeight = 448 / kRasterScale;
 
   Gs();
   enum class DepthTest { Never, Always, GreaterEqual, Greater, LessEqual };
@@ -59,7 +69,9 @@ public:
   }
   void set_alpha_test(std::uint64_t test) { alpha_test_ = test; }
   // Logical linear color storage, NOT native GS swizzled VRAM. Each covered
-  // host sample represents a 4x4 native tile. Memory must outlive the binding.
+  // sample writes a kRasterScale-square native tile. Scale 1 removes that tile
+  // replication, but does not make coverage/filtering hardware accurate.
+  // Memory must outlive the binding.
   void set_color_target(std::vector<std::uint8_t>* memory, std::uint64_t frame);
   void clear(std::uint32_t color, std::uint32_t depth = 0xFFFFFFFFu);
   void point(const GsVertex& vertex);

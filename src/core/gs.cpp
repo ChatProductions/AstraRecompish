@@ -65,11 +65,12 @@ std::uint32_t Gs::target_read(std::uint32_t address) const {
 }
 
 void Gs::target_write(int x, int y, std::uint32_t color, std::uint32_t mask) {
-  if (static_cast<unsigned>(x * 4) >= color_width_) return;
-  for (unsigned dy = 0; dy < 4; ++dy)
-    for (unsigned dx = 0; dx < 4; ++dx) {
+  if (static_cast<unsigned>(x * kRasterScale) >= color_width_) return;
+  for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
+    for (unsigned dx = 0; dx < static_cast<unsigned>(kRasterScale); ++dx) {
       const auto address = color_base_ +
-          ((y * 4u + dy) * color_width_ + x * 4u + dx) * 4u;
+          ((y * static_cast<unsigned>(kRasterScale) + dy) * color_width_ +
+           x * static_cast<unsigned>(kRasterScale) + dx) * 4u;
       const auto value = (color & ~mask) | (target_read(address) & mask);
       for (unsigned b = 0; b < 4; ++b)
         (*color_memory_)[(address + b) & 0x3FFFFFu] = value >> (b * 8u);
@@ -116,13 +117,15 @@ void Gs::write(int x, int y, std::uint32_t z, std::uint32_t color) {
     std::uint16_t trace_hits = 0;
     std::array<std::uint32_t, 16> trace_before;
     if (pixel_observer_ && color_memory_ &&
-        static_cast<unsigned>(x * 4) < color_width_) {
-      const auto first = color_base_ + (y * 4u * color_width_ + x * 4u) * 4u;
+        static_cast<unsigned>(x * kRasterScale) < color_width_) {
+      const auto first = color_base_ +
+          (y * static_cast<unsigned>(kRasterScale) * color_width_ +
+           x * static_cast<unsigned>(kRasterScale)) * 4u;
       for (std::size_t watch = 0; watch < pixel_watch_addresses_.size(); ++watch) {
         const auto address = pixel_watch_addresses_[watch];
-        for (unsigned dy = 0; dy < 4u; ++dy) {
+        for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy) {
           const auto delta = (address - (first + dy * color_width_ * 4u)) & 0x3FFFFFu;
-          if (delta < 16u) {
+          if (delta < static_cast<unsigned>(kRasterScale) * 4u) {
             trace_hits |= static_cast<std::uint16_t>(1u << watch);
             trace_before[watch] = target_read(address);
             break;
@@ -279,8 +282,10 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
 std::uint32_t Gs::pixel(int x, int y) const {
   if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) return 0;
   if (color_memory_) {
-    if (static_cast<unsigned>(x * 4) >= color_width_) return 0;
-    return target_read(color_base_ + (y * 4u * color_width_ + x * 4u) * 4u);
+    if (static_cast<unsigned>(x * kRasterScale) >= color_width_) return 0;
+    return target_read(color_base_ +
+        (y * static_cast<unsigned>(kRasterScale) * color_width_ +
+         x * static_cast<unsigned>(kRasterScale)) * 4u);
   }
   return color_[static_cast<std::size_t>(y * kWidth + x)];
 }

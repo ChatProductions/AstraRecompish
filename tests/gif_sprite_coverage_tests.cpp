@@ -81,19 +81,19 @@ void append_texture(Packet& packet) {
 }
 
 bool covered(const Rectangle& rect, int x, int y) {
-  // Astra's quarter grid represents native anchors (4*x, 4*y), not centers of
-  // a 4x4 footprint. Test the original half-open rectangle at those anchors.
+  // Raster samples represent native anchors (scale*x, scale*y), not centers
+  // of a tile. Test the original half-open rectangle at those anchors.
   // This independent inequality oracle does not reproduce any ceil helper.
-  const int native_fixed_x = x * 64;
-  const int native_fixed_y = y * 64;
+  const int native_fixed_x = x * 16 * ps2vita::Gs::kRasterScale;
+  const int native_fixed_y = y * 16 * ps2vita::Gs::kRasterScale;
   return std::min(rect.x0, rect.x1) <= native_fixed_x &&
       native_fixed_x < std::max(rect.x0, rect.x1) &&
       std::min(rect.y0, rect.y1) <= native_fixed_y &&
       native_fixed_y < std::max(rect.y0, rect.y1) &&
-      rect.left <= static_cast<unsigned>(x * 4) &&
-      static_cast<unsigned>(x * 4) <= rect.right &&
-      rect.top <= static_cast<unsigned>(y * 4) &&
-      static_cast<unsigned>(y * 4) <= rect.bottom;
+      rect.left <= static_cast<unsigned>(x * ps2vita::Gs::kRasterScale) &&
+      static_cast<unsigned>(x * ps2vita::Gs::kRasterScale) <= rect.right &&
+      rect.top <= static_cast<unsigned>(y * ps2vita::Gs::kRasterScale) &&
+      static_cast<unsigned>(y * ps2vita::Gs::kRasterScale) <= rect.bottom;
 }
 
 unsigned texture_coordinate(unsigned first, unsigned second,
@@ -142,8 +142,10 @@ void run_case(const Rectangle& rect, const Uv* uv = nullptr) {
       std::uint32_t expected = kBackground;
       if (covered(rect, x, y)) {
         expected = uv == nullptr ? kSolid : texel(
-            texture_coordinate(uv->u0, uv->u1, rect.x0, rect.x1, x * 64),
-            texture_coordinate(uv->v0, uv->v1, rect.y0, rect.y1, y * 64));
+            texture_coordinate(uv->u0, uv->u1, rect.x0, rect.x1,
+                               x * 16 * ps2vita::Gs::kRasterScale),
+            texture_coordinate(uv->v0, uv->v1, rect.y0, rect.y1,
+                               y * 16 * ps2vita::Gs::kRasterScale));
       }
       const auto actual = gs.pixel(x, y);
       if (actual != expected) {
@@ -155,7 +157,7 @@ void run_case(const Rectangle& rect, const Uv* uv = nullptr) {
     }
   }
   check(mismatches == 0u, rect.name,
-        "all quarter-grid anchors have independently expected coverage/color");
+        "all raster anchors have independently expected coverage/color");
   if (mismatches != 0u)
     std::fprintf(stderr, "  [%s] %u framebuffer mismatches\n", rect.name, mismatches);
 }
@@ -166,7 +168,7 @@ int main() {
   // Primary basis: PCSX2 v2.8.2 software DrawSprite preserves fractional
   // geometry, ceil-rounds both rectangle edges, then uses exclusive maxima:
   // https://github.com/PCSX2/pcsx2/blob/v2.8.2/pcsx2/GS/Renderers/SW/GSRasterizer.cpp#L1022-L1109
-  // These are quarter-grid logical-model checks, not physical PS2 goldens.
+  // Run on both grids: these remain logical-model checks, not PS2 goldens.
   const Rectangle rectangles[]{
       {"integer full target control", 0, 0, 10240, 7168},
       {"fractional full-width right edge", 0, 0, 10239, 512},

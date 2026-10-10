@@ -73,6 +73,39 @@ def owned_payloads():
     return [clear, upload, draws, tail]
 
 
+def linear_pixel(x, y):
+    # A different word at every relevant U/V; retained alpha tests raw hashing
+    # independently from the RGB-only PPM, including a PSMCT24 view.
+    return ((32 + x % 16) | ((64 + y) << 8) | (((x ^ (3 * y)) & 255) << 16) |
+            ((16 + (x + 17 * y) % 224) << 24))
+
+
+def linear_dispfb(psm=0, block=4, fbw=2, x=5, y=3):
+    return block | (fbw << 9) | (psm << 15) | (x << 32) | (y << 43)
+
+
+def linear_payload():
+    # A separate 128-wide logical buffer at byte0x8000. The selected origin
+    # (5,3) is deliberately not quarter aligned, and DBW=2 exposes stride bugs.
+    payload = ad((0x50, (128 << 32) | (2 << 48)), (0x51, 0),
+                 (0x52, 128 | (12 << 32)), (0x53, 0))
+    pixels = [linear_pixel(x, y) for y in range(12) for x in range(128)]
+    return payload + struct.pack("<QQ", (2 << 58) | 0x8000 | (len(pixels) // 4), 0) + \
+        struct.pack(f"<{len(pixels)}I", *pixels)
+
+
+def hash_words(words):
+    value = HASH_SEED
+    for word in words:
+        value = ((value ^ word) * HASH_PRIME) & MASK64
+    return f"{value:016X}"
+
+
+def ppm_words(words, width, height):
+    return f"P6\n{width} {height}\n255\n".encode() + bytes(
+        (word >> shift) & 255 for word in words for shift in (0, 8, 16))
+
+
 def clean_environment():
     return {key: value for key, value in os.environ.items()
             if not key.startswith("ASTRA_")}
@@ -86,6 +119,9 @@ class GifReplayTests(unittest.TestCase):
         cls.trace = cls.directory / "owned.astgif"
         cls.data = serialized_trace(owned_payloads())
         cls.trace.write_bytes(cls.data)
+        cls.linear_trace = cls.directory / "owned-linear.astgif"
+        cls.linear_data = serialized_trace([*owned_payloads(), linear_payload()])
+        cls.linear_trace.write_bytes(cls.linear_data)
         cls.rom = cls.directory / "owned-nop-rom.bin"
         cls.rom.write_bytes(bytes(4 * 1024 * 1024))
 
@@ -239,6 +275,180 @@ class GifReplayTests(unittest.TestCase):
                 result = self.replay(*arguments)
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 self.assertNotIn("trace_validated=1", result.stdout)
+
+    def test_explicit_linear_crop_uses_raw_origin_stride_and_preserves_replay(self):
+        baseline_image = self.directory / "linear-baseline-active.ppm"
+        baseline = self.replay("--framebuffer", baseline_image, trace=self.linear_trace)
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        selected = [linear_pixel(x, y) for y in (3, 7) for x in (5, 9)]
+        # Reserved bit63 also verifies that parsing/printing is genuinely64-bit;
+        # it does not affect the explicitly decoded supported DISPFB fields.
+        dispfb = linear_dispfb() | (1 << 63)
+        for index, text in enumerate((f"{dispfb:016X}", f"0x{dispfb:016x}",
+                                      f"0X{dispfb:016X}")):
+            with self.subTest(hex=text):
+                image = self.directory / f"linear-crop-{index}.ppm"
+                active = self.directory / f"linear-active-{index}.ppm"
+                table = self.directory / f"linear-observer-{index}.tsv"
+                result = self.replay("--linear-framebuffer", image, "--dispfb", text,
+                                     "--linear-size", "8x8", "--framebuffer", active,
+                                     "--triangles", table, trace=self.linear_trace)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(image.read_bytes(), ppm_words(selected, 2, 2))
+                self.assertEqual(active.read_bytes(), baseline_image.read_bytes())
+                self.assertIn(f"gif_linear_framebuffer DISPFB={dispfb:016X}", result.stdout)
+                self.assertIn("base=00008000 stride=128 origin=5,3", result.stdout)
+                self.assertIn("native_size=8x8 sample_scale=4 output_size=2x2", result.stdout)
+                self.assertIn(f"word_hash={hash_words(selected)}", result.stdout)
+                self.assertIn("nonblack_rgb_samples=4/4", result.stdout)
+                self.assertIn("scope=logical-linear-not-scanout selection=explicit", result.stdout)
+                self.assertIn("# complete triangles=2", table.read_text())
+                # The optional crop and triangle observer must not mutate the
+                # active draw target or any logical VRAM word.
+                for field in ("framebuffer_hash", "logical_vram_word_hash"):
+                    expected = re.search(rf"{field}=(\w+)", baseline.stdout).group(1)
+                    self.assertIn(f"{field}={expected}", result.stdout)
+                baseline_counters = re.search(r"gif_packets=.* exported_triangles=", baseline.stdout).group(0)
+                self.assertIn(baseline_counters, result.stdout)
+
+    def test_explicit_linear_psm24_exports_rgb_but_hashes_retained_raw_alpha(self):
+        image = self.directory / "linear-psm24.ppm"
+        selected = [linear_pixel(x, y) for y in (3, 7) for x in (5, 9)]
+        result = self.replay("--linear-framebuffer", image,
+                             "--dispfb", f"{linear_dispfb(psm=1):X}",
+                             "--linear-size", "8x8", trace=self.linear_trace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(image.read_bytes(), ppm_words(selected, 2, 2))
+        self.assertIn(f"word_hash={hash_words(selected)}", result.stdout)
+        self.assertNotEqual(hash_words(selected), hash_words([word & 0xFFFFFF for word in selected]))
+
+    def test_explicit_linear_prefix_reads_the_replayed_endpoint_not_terminal_vram(self):
+        image = self.directory / "linear-prefix.ppm"
+        active = self.directory / "linear-prefix-active.ppm"
+        baseline_active = self.directory / "linear-prefix-baseline.ppm"
+        baseline = self.replay("--stop-packet", "4", "--framebuffer", baseline_active,
+                               trace=self.linear_trace)
+        result = self.replay("--stop-packet", "4", "--linear-framebuffer", image,
+                             "--dispfb", f"{linear_dispfb():X}", "--linear-size", "8x8",
+                             "--framebuffer", active, trace=self.linear_trace)
+        self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(image.read_bytes(), ppm_words([0, 0, 0, 0], 2, 2))
+        self.assertEqual(active.read_bytes(), baseline_active.read_bytes())
+        self.assertIn("stop=packet-prefix trace_packets=5", result.stdout)
+        self.assertIn("replay_packets=4", result.stdout)
+        self.assertIn("terminal_ee_cycle=100 terminal_next_ee_pc=12345678", result.stdout)
+        self.assertIn(f"word_hash={hash_words([0, 0, 0, 0])}", result.stdout)
+        self.assertIn("nonblack_rgb_samples=0/4", result.stdout)
+        for field in ("framebuffer_hash", "logical_vram_word_hash"):
+            expected = re.search(rf"{field}=(\w+)", baseline.stdout).group(1)
+            self.assertIn(f"{field}={expected}", result.stdout)
+
+    def test_explicit_linear_strict_argument_and_region_validation_is_preflight(self):
+        image = self.directory / "linear-invalid.ppm"
+        active = self.directory / "linear-invalid-active.ppm"
+        active.write_bytes(b"owned existing active image")
+        valid = ("--linear-framebuffer", image, "--dispfb", f"{linear_dispfb():X}",
+                 "--linear-size", "8x8")
+        invalid = [
+            ("--linear-framebuffer", image),
+            ("--dispfb", f"{linear_dispfb():X}"), ("--linear-size", "8x8"),
+            valid[:-2], valid[:2] + valid[4:], valid[2:],
+            ("--linear-framebuffer",),
+            ("--linear-framebuffer", "", *valid[2:]),
+            ("--linear-framebuffer", "-", *valid[2:]),
+            (*valid, "--linear-framebuffer", image),
+            (*valid, "--dispfb", f"{linear_dispfb():X}"),
+            (*valid, "--linear-size", "8x8"),
+        ]
+        for text in ("", "+1", "-1", " 1", "1 ", "0x", "0xG", "1junk",
+                     "10000000000000000"):
+            invalid.append(("--linear-framebuffer", image, "--dispfb", text,
+                            "--linear-size", "8x8"))
+        for size in ("", "0x8", "8x0", "0x0", "8X8", "8", "8x", "x8", "8x8x8",
+                     "+8x8", "-8x8", " 8x8", "8x8 ", "8x+8", "8x-8",
+                     "6x8", "8x6", "8.0x8", "128x8", "8x4294967296"):
+            invalid.append((*valid[:4], "--linear-size", size))
+        for dispfb in (linear_dispfb(fbw=0), linear_dispfb(psm=2),
+                       linear_dispfb(fbw=1, x=60),
+                       linear_dispfb(block=511, y=32), linear_dispfb(fbw=63, y=2047)):
+            invalid.append(("--linear-framebuffer", image, "--dispfb", f"{dispfb:X}",
+                            "--linear-size", "8x8"))
+        for arguments in invalid:
+            with self.subTest(arguments=arguments):
+                result = self.replay(*arguments, "--framebuffer", active,
+                                     trace=self.linear_trace)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertTrue(result.stderr)
+                self.assertNotIn("trace_validated=1", result.stdout)
+                self.assertFalse(image.exists())
+                self.assertEqual(active.read_bytes(), b"owned existing active image")
+                self.assertEqual(self.linear_trace.read_bytes(), self.linear_data)
+
+    def test_explicit_linear_output_aliases_protect_input_and_other_outputs(self):
+        common = ("--dispfb", f"{linear_dispfb():X}", "--linear-size", "8x8")
+        input_aliases = (self.linear_trace,
+                         self.directory / "nested" / ".." / self.linear_trace.name)
+        for alias in input_aliases:
+            with self.subTest(input_alias=alias):
+                result = self.replay("--linear-framebuffer", alias, *common,
+                                     trace=self.linear_trace)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertEqual(self.linear_trace.read_bytes(), self.linear_data)
+        linked_input = self.directory / "linear-input-hardlink.ppm"
+        os.link(self.linear_trace, linked_input)
+        result = self.replay("--linear-framebuffer", linked_input, *common,
+                             trace=self.linear_trace)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertEqual(linked_input.read_bytes(), self.linear_data)
+
+        for index, flag in enumerate(("--framebuffer", "--triangles", "--sprite-framebuffer",
+                                      "--sprite-source")):
+            original = self.directory / f"linear-protected-output-{index}.ppm"
+            original.write_bytes(b"owned existing output")
+            link = self.directory / f"linear-protected-hardlink-{index}.ppm"
+            os.link(original, link)
+            aliases = (original, self.directory / "nested" / ".." / original.name, link)
+            for alias in aliases:
+                with self.subTest(flag=flag, alias=alias):
+                    extra = (flag, original)
+                    if flag.startswith("--sprite-"):
+                        partner = self.directory / f"linear-sprite-partner-{index}.ppm"
+                        extra += ("--sprite", "1",
+                                  "--sprite-source" if flag == "--sprite-framebuffer"
+                                  else "--sprite-framebuffer", partner)
+                    result = self.replay("--linear-framebuffer", alias, *common, *extra,
+                                         trace=self.linear_trace)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertEqual(original.read_bytes(), b"owned existing output")
+                    self.assertEqual(link.read_bytes(), b"owned existing output")
+                    self.assertEqual(self.linear_trace.read_bytes(), self.linear_data)
+
+    def test_explicit_linear_corrupt_suffix_never_materializes_after_early_stop(self):
+        corrupted = (self.linear_data[:-1], self.linear_data + b"\0",
+                     self.linear_data[:-1] + bytes([self.linear_data[-1] ^ 1]))
+        for index, data in enumerate(corrupted):
+            trace = self.directory / f"linear-bad-suffix-{index}.astgif"
+            trace.write_bytes(data)
+            for stop in ("packet", "sprite"):
+                with self.subTest(corruption=index, stop=stop):
+                    image = self.directory / f"linear-corrupt-{index}-{stop}.ppm"
+                    active = self.directory / f"linear-corrupt-active-{index}-{stop}.ppm"
+                    active.write_bytes(b"owned prior active output")
+                    options = ("--stop-packet", "1")
+                    if stop == "sprite":
+                        options = ("--sprite", "1", "--sprite-framebuffer",
+                                   self.directory / f"linear-bad-sprite-{index}.ppm",
+                                   "--sprite-source", self.directory / f"linear-bad-source-{index}.ppm")
+                    result = self.replay(*options, "--linear-framebuffer", image,
+                                         "--dispfb", f"{linear_dispfb():X}",
+                                         "--linear-size", "8x8", "--framebuffer", active,
+                                         trace=trace)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("validation failed", result.stderr)
+                    self.assertNotIn("trace_validated=1", result.stdout)
+                    self.assertFalse(image.exists())
+                    self.assertEqual(active.read_bytes(), b"owned prior active output")
 
     def bios_trace(self, overrides=None, max_steps=8, rom=None, framebuffer=None,
                    census=None):

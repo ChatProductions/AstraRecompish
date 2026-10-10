@@ -1,6 +1,7 @@
 #include "ps2vita/framebuffer_dump.hpp"
 #include "ps2vita/gif.hpp"
 #include "ps2vita/gif_trace.hpp"
+#include "ps2vita/gs_display.hpp"
 
 #include <cstdio>
 #include <filesystem>
@@ -20,8 +21,12 @@ struct Options {
   const char* sprite_framebuffer = nullptr;
   const char* sprite_source = nullptr;
   const char* triangles = nullptr;
+  const char* linear_framebuffer = nullptr;
   bool have_sprite = false;
+  bool have_dispfb = false, have_linear_size = false;
   std::uint64_t sprite = 0, stop_packet = 0;
+  std::uint64_t dispfb = 0;
+  std::uint32_t linear_width = 0, linear_height = 0;
 };
 
 bool parse_count(const char* text, std::uint64_t maximum, std::uint64_t& value) {
@@ -34,6 +39,56 @@ bool parse_count(const char* text, std::uint64_t maximum, std::uint64_t& value) 
     value = value * 10u + digit;
   }
   return true;
+}
+
+bool parse_hex_word(const char* text, std::uint64_t& value) {
+  if (text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) text += 2;
+  if (*text == '\0') return false;
+  value = 0;
+  for (; *text; ++text) {
+    unsigned digit;
+    if (*text >= '0' && *text <= '9') digit = *text - '0';
+    else if (*text >= 'a' && *text <= 'f') digit = *text - 'a' + 10u;
+    else if (*text >= 'A' && *text <= 'F') digit = *text - 'A' + 10u;
+    else return false;
+    if (value > (std::numeric_limits<std::uint64_t>::max() - digit) / 16u)
+      return false;
+    value = value * 16u + digit;
+  }
+  return true;
+}
+
+bool parse_linear_size(const char* text, std::uint32_t& width,
+                         std::uint32_t& height) {
+  const std::string size(text);
+  const auto separator = size.find('x');
+  if (separator == std::string::npos || size.find('x', separator + 1u) != std::string::npos)
+    return false;
+  std::uint64_t native_width = 0, native_height = 0;
+  if (!parse_count(size.substr(0, separator).c_str(),
+                   std::numeric_limits<std::uint32_t>::max(), native_width) ||
+      !parse_count(size.substr(separator + 1u).c_str(),
+                   std::numeric_limits<std::uint32_t>::max(), native_height) ||
+      native_width == 0u || native_height == 0u ||
+      native_width % ps2vita::Gs::kRasterScale != 0u ||
+      native_height % ps2vita::Gs::kRasterScale != 0u) return false;
+  width = static_cast<std::uint32_t>(native_width);
+  height = static_cast<std::uint32_t>(native_height);
+  return true;
+}
+
+bool valid_linear_region(const Options& options) {
+  const auto framebuffer = ps2vita::GsDisplayFramebuffer::decode(options.dispfb);
+  const auto stride = framebuffer.width_pixels();
+  if (framebuffer.fbw == 0u || framebuffer.psm > 1u ||
+      std::uint64_t{framebuffer.dbx} + options.linear_width > stride) return false;
+  // Validate the complete native region, not just sampled pixels. Widen before
+  // coordinate addition so a huge requested height cannot wrap the decoder's
+  // uint32 operands into a superficially valid address.
+  const auto last = framebuffer.base_bytes() +
+      ((std::uint64_t{framebuffer.dby} + options.linear_height - 1u) * stride +
+       framebuffer.dbx + options.linear_width - 1u) * 4u;
+  return last + 3u < 0x400000u;
 }
 
 bool same_path(const char* left, const char* right) {
@@ -63,20 +118,32 @@ bool parse_options(int argc, char** argv, Options& options) {
               ps2vita::gif_trace_detail::max_records, options.stop_packet) ||
           options.stop_packet == 0u) return false;
       have_stop_packet = true;
+    } else if (name == "--dispfb") {
+      if (options.have_dispfb || !parse_hex_word(value, options.dispfb)) return false;
+      options.have_dispfb = true;
+    } else if (name == "--linear-size") {
+      if (options.have_linear_size ||
+          !parse_linear_size(value, options.linear_width, options.linear_height)) return false;
+      options.have_linear_size = true;
     } else {
       if (*value == '\0' || std::string(value) == "-") return false;
       const char** target = name == "--framebuffer" ? &options.framebuffer :
           name == "--sprite-framebuffer" ? &options.sprite_framebuffer :
           name == "--sprite-source" ? &options.sprite_source :
-          name == "--triangles" ? &options.triangles : nullptr;
+          name == "--triangles" ? &options.triangles :
+          name == "--linear-framebuffer" ? &options.linear_framebuffer : nullptr;
       if (!target || *target) return false;
       *target = value;
     }
   }
   if (options.have_sprite != (options.sprite_framebuffer != nullptr) ||
       options.have_sprite != (options.sprite_source != nullptr)) return false;
+  if (options.have_dispfb != (options.linear_framebuffer != nullptr) ||
+      options.have_linear_size != (options.linear_framebuffer != nullptr) ||
+      (options.linear_framebuffer && !valid_linear_region(options))) return false;
   const std::vector<const char*> paths{options.trace, options.framebuffer,
-      options.sprite_framebuffer, options.sprite_source, options.triangles};
+      options.sprite_framebuffer, options.sprite_source, options.triangles,
+      options.linear_framebuffer};
   for (std::size_t index = 1; index < paths.size(); ++index) {
     if (!paths[index]) continue;
     for (std::size_t previous = 0; previous < index; ++previous)
@@ -137,6 +204,41 @@ bool write_pixels(const char* path, const std::vector<std::uint32_t>& pixels,
   return static_cast<bool>(output);
 }
 
+bool write_linear_framebuffer(const Options& options, const ps2vita::Gif& gif) {
+  const auto framebuffer = ps2vita::GsDisplayFramebuffer::decode(options.dispfb);
+  const auto scale = static_cast<unsigned>(ps2vita::Gs::kRasterScale);
+  const auto width = options.linear_width / scale;
+  const auto height = options.linear_height / scale;
+  std::ofstream output(options.linear_framebuffer, std::ios::binary | std::ios::trunc);
+  output << "P6\n" << width << ' ' << height << "\n255\n";
+  std::uint64_t hash = 1469598103934665603ull;
+  std::size_t nonblack = 0;
+  for (std::uint32_t y = 0; y < height; ++y)
+    for (std::uint32_t x = 0; x < width; ++x) {
+      const auto address = framebuffer.linear_pixel_byte_address(x * scale, y * scale);
+      const auto pixel = gif.read_local32(static_cast<std::uint32_t>(address));
+      const char rgb[]{static_cast<char>(pixel & 0xFFu),
+                       static_cast<char>((pixel >> 8u) & 0xFFu),
+                       static_cast<char>((pixel >> 16u) & 0xFFu)};
+      output.write(rgb, sizeof(rgb));
+      hash ^= pixel;
+      hash *= 1099511628211ull;
+      nonblack += (pixel & 0xFFFFFFu) != 0u;
+    }
+  output.close();
+  if (!output) return false;
+  std::printf("gif_linear_framebuffer DISPFB=%016llX base=%08X stride=%u "
+              "origin=%u,%u native_size=%ux%u sample_scale=%u output_size=%ux%u "
+              "word_hash=%016llX nonblack_rgb_samples=%zu/%zu "
+              "scope=logical-linear-not-scanout selection=explicit path=%s\n",
+      static_cast<unsigned long long>(options.dispfb), framebuffer.base_bytes(),
+      framebuffer.width_pixels(), framebuffer.dbx, framebuffer.dby,
+      options.linear_width, options.linear_height, scale, width, height,
+      static_cast<unsigned long long>(hash), nonblack, std::size_t{width} * height,
+      options.linear_framebuffer);
+  return true;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -144,9 +246,13 @@ int main(int argc, char** argv) {
   if (!parse_options(argc, argv, options)) {
     std::fputs("usage: ps2gif_replay TRACE [--framebuffer FILE] "
                "[--sprite N --sprite-framebuffer FILE --sprite-source FILE] "
-               "[--stop-packet N] [--triangles FILE]\n"
+               "[--stop-packet N] [--triangles FILE] "
+               "[--linear-framebuffer FILE --dispfb HEX --linear-size WIDTHxHEIGHT]\n"
                "counts are unsigned decimal; stop-packet is 1..100000; "
-               "output paths must be distinct from each other and TRACE\n", stderr);
+               "output paths must be distinct from each other and TRACE\n"
+               "linear selection requires unsigned hex DISPFB, positive decimal native "
+               "dimensions divisible by this build's sample scale, PSMCT32/24, "
+               "nonzero stride and an unwrapped region within 4 MiB\n", stderr);
     return 2;
   }
   std::ifstream input(options.trace, std::ios::binary);
@@ -257,6 +363,11 @@ int main(int argc, char** argv) {
     std::fputs("could not write selected sprite framebuffer/source PPM\n", stderr);
     return 2;
   }
+  if (options.linear_framebuffer && !write_linear_framebuffer(options, gif)) {
+    std::fprintf(stderr, "could not write explicit linear framebuffer: %s\n",
+        options.linear_framebuffer);
+    return 2;
+  }
 
   std::uint64_t framebuffer_hash = 1469598103934665603ull;
   std::uint64_t vram_hash = 1469598103934665603ull;
@@ -272,6 +383,12 @@ int main(int argc, char** argv) {
     vram_hash ^= gif.read_local32(address);
     vram_hash *= 1099511628211ull;
   }
+  std::printf("gs_raster_grid width=%u height=%u sample_scale=%u scope=%s\n",
+      static_cast<unsigned>(ps2vita::Gs::kWidth),
+      static_cast<unsigned>(ps2vita::Gs::kHeight),
+      static_cast<unsigned>(ps2vita::Gs::kRasterScale),
+      ps2vita::Gs::kRasterScale == 1u ? "native-pixel-grid-approximate-linear-gs"
+                                    : "quarter-grid-approximate-linear-gs");
   std::printf("gif_replay trace_validated=1 scope=fresh-instance-reset-starting-serialized-astra-gif "
               "not-pcsx2-dump-not-hardware-timeline stop=%s "
               "trace_packets=%llu trace_payload_bytes=%llu replay_packets=%llu "

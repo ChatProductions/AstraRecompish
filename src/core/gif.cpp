@@ -6,6 +6,8 @@
 namespace ps2vita {
 namespace {
 
+constexpr int kFixedRasterStep = 16 * Gs::kRasterScale;
+
 std::uint64_t load64(const std::uint8_t* data) {
   std::uint64_t value = 0;
   std::memcpy(&value, data, sizeof(value));
@@ -22,13 +24,17 @@ int fixed_coordinate(std::uint64_t xyz, std::uint64_t offset,
 
 int scaled_coordinate(std::uint64_t xyz, std::uint64_t offset,
                       unsigned coordinate_shift, unsigned offset_shift) {
-  return fixed_coordinate(xyz, offset, coordinate_shift, offset_shift) / 64;
+  // Preserve the existing integer-vertex truncation policy in both builds.
+  // The native diagnostic has more samples, not full GS subpixel coverage.
+  return fixed_coordinate(xyz, offset, coordinate_shift, offset_shift) /
+      kFixedRasterStep;
 }
 
-int ceil_quarter_coordinate(int fixed) {
-  // Quarter-grid anchors are native x*4: GS 12.4 fixed x*64. C++ signed
+int ceil_raster_coordinate(int fixed) {
+  // Raster anchors are native x*kRasterScale in GS 12.4 units. C++ signed
   // division already rounds negative values toward the required ceiling.
-  return fixed >= 0 ? (fixed + 63) / 64 : fixed / 64;
+  return fixed >= 0 ? (fixed + kFixedRasterStep - 1) / kFixedRasterStep :
+      fixed / kFixedRasterStep;
 }
 
 } // namespace
@@ -394,10 +400,10 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
   gs_.set_blend_state((prim_ & (1u << 6)) != 0u, alpha_[context], pabe_, colclamp_);
   gs_.set_alpha_test(test_[context]);
   const auto clip = scissor_[context];
-  gs_.set_scissor(static_cast<int>((clip & 0x7FFu) / 4u),
-                  static_cast<int>(((clip >> 32) & 0x7FFu) / 4u),
-                  static_cast<int>(((clip >> 16) & 0x7FFu) / 4u),
-                  static_cast<int>(((clip >> 48) & 0x7FFu) / 4u));
+  gs_.set_scissor(static_cast<int>((clip & 0x7FFu) / Gs::kRasterScale),
+                  static_cast<int>(((clip >> 32) & 0x7FFu) / Gs::kRasterScale),
+                  static_cast<int>(((clip >> 16) & 0x7FFu) / Gs::kRasterScale),
+                  static_cast<int>(((clip >> 48) & 0x7FFu) / Gs::kRasterScale));
   if ((clip & 0x7FFu) > ((clip >> 16) & 0x7FFu) ||
       ((clip >> 32) & 0x7FFu) > ((clip >> 48) & 0x7FFu))
     gs_.set_scissor(1, 1, 0, 0);
@@ -604,23 +610,27 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
   const auto span_x = end_x - origin_x;
   const auto span_y = end_y - origin_y;
   // Preserve fractional bounds until coverage is decided. This selects the
-  // native anchors lying in [min, max), not a native-resolution GS raster.
-  auto x0 = ceil_quarter_coordinate(origin_x);
-  auto y0 = ceil_quarter_coordinate(origin_y);
-  auto x1 = ceil_quarter_coordinate(end_x);
-  auto y1 = ceil_quarter_coordinate(end_y);
+  // native anchors lying in [min, max), not hardware GS raster coverage.
+  auto x0 = ceil_raster_coordinate(origin_x);
+  auto y0 = ceil_raster_coordinate(origin_y);
+  auto x1 = ceil_raster_coordinate(end_x);
+  auto y1 = ceil_raster_coordinate(end_y);
   if (x0 > x1) std::swap(x0, x1);
   if (y0 > y1) std::swap(y0, y1);
 
   const auto scissor = scissor_[context];
-  const auto clip_x0 = static_cast<int>(((scissor & 0x7FFu) + 3u) / 4u);
-  const auto clip_x1 = static_cast<int>(((scissor >> 16) & 0x7FFu) / 4u);
-  const auto clip_y0 = static_cast<int>((((scissor >> 32) & 0x7FFu) + 3u) / 4u);
-  const auto clip_y1 = static_cast<int>(((scissor >> 48) & 0x7FFu) / 4u);
-  x0 = std::max(x0, clip_x0);
-  x1 = std::min(x1, clip_x1 + 1);
-  y0 = std::max(y0, clip_y0);
-  y1 = std::min(y1, clip_y1 + 1);
+  const auto clip_x0 = static_cast<int>(
+      ((scissor & 0x7FFu) + Gs::kRasterScale - 1u) / Gs::kRasterScale);
+  const auto clip_x1 = static_cast<int>(((scissor >> 16) & 0x7FFu) / Gs::kRasterScale);
+  const auto clip_y0 = static_cast<int>(
+      (((scissor >> 32) & 0x7FFu) + Gs::kRasterScale - 1u) / Gs::kRasterScale);
+  const auto clip_y1 = static_cast<int>(((scissor >> 48) & 0x7FFu) / Gs::kRasterScale);
+  // Gs::point already rejects samples outside this viewport. Bound the loops
+  // before texture sampling as well, without changing any accepted writes.
+  x0 = std::max({x0, clip_x0, 0});
+  x1 = std::min({x1, clip_x1 + 1, Gs::kWidth});
+  y0 = std::max({y0, clip_y0, 0});
+  y1 = std::min({y1, clip_y1 + 1, Gs::kHeight});
   const auto z = static_cast<std::uint32_t>(value >> 32);
   const auto color = static_cast<std::uint32_t>(rgbaq_);
   const bool textured_uv = (prim_ & (1u << 4)) != 0u &&
@@ -637,10 +647,10 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
         // from the original (possibly reversed) geometry. Truncating a signed
         // slope before adding UV0 would choose the wrong texel at boundaries.
         const auto u = (std::int64_t{u0} * span_x +
-            std::int64_t{x * 64 - origin_x} * (u1 - u0)) /
+            std::int64_t{x * kFixedRasterStep - origin_x} * (u1 - u0)) /
             (std::int64_t{span_x} * 16);
         const auto v = (std::int64_t{v0} * span_y +
-            std::int64_t{y * 64 - origin_y} * (v1 - v0)) /
+            std::int64_t{y * kFixedRasterStep - origin_y} * (v1 - v0)) /
             (std::int64_t{span_y} * 16);
         pixel_color = sample_texture(context,
             std::max<std::int64_t>(0, u),

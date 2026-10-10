@@ -72,7 +72,7 @@ core is real BIOS execution, not a renamed frontend or a fake compatibility scre
 
 ## Project status
 
-Latest verified research checkpoint: **October 9, 2026**. These are development
+Latest verified research checkpoint: **October 10, 2026**. These are development
 results, not a game-compatibility list or a measured completion percentage.
 
 | Area | Current state |
@@ -80,7 +80,7 @@ results, not a game-compatibility list or a measured completion percentage.
 | BIOS bootstrap | Executes through DECI2 startup, multi-tag SIF transfers, relocated EE code, and repeated no-clear restart completion |
 | PC recompiler | Phase-0 analysis, a tested R5900-to-C++ subset, and a generated mixed-workload performance gate |
 | Vita runtime | VitaSDK-only VPK, native monitor, ELF loading, stepping, and diagnostic framebuffer |
-| Guest graphics | 160×112 software rasterizer; reference-checked PATH3 fixtures cover UV, perspective ST/Q, RGB alpha selection and HIGHLIGHT modes; BIOS output is not a confirmed intro |
+| Guest graphics | 160×112 default rasterizer plus separate 640×448 PC diagnostic replay; readable guest-generated startup lettering in a selected buffer; full animation/scanout still unverified |
 | VU1 | Delayed VI branch reads and finite DIV/MUL fixes; controlled synchronized packet matches all 4,096 memory words in both PCSX2 modes; original VIF/VU timing and full arithmetic remain incomplete |
 | DMA / graphics service | Normal forward VIF1 uploads, physical RAM/SPR addressing, consistent chain writeback, independent SIF service, and device-boundary visibility have owned regression tests; transport remains a coarse packet model |
 | Audio / SPU2 | Tested DMA and shadow ADPCM/voice-envelope/pitch/mixing components; no Vita speaker output; further audio work deferred |
@@ -92,7 +92,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **34/34 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **37/37 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -110,7 +110,22 @@ speed on physical Vita hardware**. One malformed VU1 PATH1 tag remains rejected.
 Formats, fog, native GS buffer semantics and VU/GIF timing still need work.
 See the [framebuffer-feedback implementation and validation](docs/SESSION_2026-09-21.md).
 
-### Latest cloud-background and EE SQRT milestone
+### Readable startup lettering in full-pixel PC replay
+
+The new **640×448 native-pixel diagnostic replay** renders the actual guest
+stream again, rather than enlarging the 160×112 image. A selected 640×256
+logical framebuffer now shows readable **Sony Computer Entertainment** lettering,
+cloud detail and colored lights. One-pixel geometry and 64 independently colored
+texture pixels have owned regression tests. The default/Vita raster remains
+unchanged; this is not a native-resolution Vita performance result.
+
+On the same sprite-50 reference sample grid, mean RGB error improves from
+**0.62 to 0.28**, and black-mask disagreements from **208 to 97**. These are
+local source-surface checks, not full-frame equality. Native GS swizzling,
+subpixel coverage, filtering, display timing and the complete animation still
+need verification. See the [full-pixel replay checkpoint](docs/SESSION_2026-10-10.md).
+
+### Cloud-background and EE SQRT milestone
 
 A concrete EE floating-point operand bug flattened the cloud brightness table.
 Correcting SQRT's source register restores the radial color mask: all **714
