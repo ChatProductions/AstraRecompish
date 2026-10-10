@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **45/45 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **47/47 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -192,6 +192,13 @@ draw-target diagnostic; unsupported display selections blank explicitly.
 The 172-check owned fixture preserves VRAM and draw state. This remains a
 linear-memory region probe, not accurate scanout; see the
 [display-preview contract and saved session](docs/SESSION_2026-10-10_DISPLAY_PREVIEW.md).
+
+Exact monitor scaling now uses contiguous row writes rather than 17,920
+rectangle calls per preview. The owned PC copy probe takes 44% less time in
+its five-trial pair; this excludes emulation and is not Vita FPS. Pixel/clip
+oracles, sanitizer gates and a new local 15-second display-routing progress
+recording are saved in the
+[monitor-scaling checkpoint](docs/SESSION_2026-10-10_MONITOR_BLIT.md).
 
 ### Cloud-background and EE SQRT milestone
 

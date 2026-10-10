@@ -1,4 +1,5 @@
 #include "screen.hpp"
+#include "ps2vita/monitor_blit.hpp"
 
 #include <psp2/display.h>
 #include <psp2/kernel/sysmem.h>
@@ -99,15 +100,7 @@ void Screen::text(int x, int y, const char* value, std::uint32_t color, int scal
 }
 
 void Screen::blit_160x112(const std::uint32_t* source, int y_offset) {
-  if (!pixels_ || !source) return;
-  for (int sy = 0; sy < 112; ++sy) {
-    for (int sx = 0; sx < 160; ++sx) {
-      const auto color = source[sy * 160 + sx];
-      const int dx = sx * 6;
-      const int dy = y_offset + sy * 4;
-      rect(dx, dy, 6, 4, color);
-    }
-  }
+  ps2vita::blit_monitor_160x112(pixels_, kPitch * kHeight, kPitch, source, y_offset);
 }
 
 void Screen::present() { sceDisplayWaitVblankStart(); }
