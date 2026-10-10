@@ -82,7 +82,8 @@ and has a 640x448 viewport. Its selected linear 640x256 output excludes the
 known adjacent-buffer over-read at this checkpoint. It re-rasterizes guest
 geometry and feedback at full pixel density; it is **not an upscale, sharpening
 filter, native GS swizzled-memory implementation or reconstructed scanout**.
-Integer-vertex truncation, filtering and other existing GS approximations remain.
+Integer-vertex truncation, incomplete LOD/filter selection and other GS
+approximations remain.
 Different raster grids intentionally have different output/VRAM hashes; compare
 matching versions/grids when checking exact replay reproducibility.
 
@@ -93,6 +94,30 @@ Selected-sprite source probes deliberately remain the documented **160x64 grid
 at native 4-pixel spacing**, in both builds. Only the selected-sprite framebuffer
 changes to the native viewport dimensions. These distinctions prevent a grid
 change from masquerading as an architectural or reference-input difference.
+
+## Bounded base-level filtering
+
+Replay now honors TEX1 MMAG when MXL=0: MMAG=1 selects linear filtering,
+MMAG=0 nearest, independently of MMIN. This is a deliberately bounded subset;
+MXL>0 retains the previous nearest fallback, not an implemented LOD/mipmap
+decision. See the pinned [reference filter selection](https://github.com/PCSX2/pcsx2/blob/v2.8.2/pcsx2/GS/Renderers/Common/GSVertexTrace.cpp#L50-L94).
+
+Linear sampling preserves signed 16.16 coordinates, applies the half-texel
+offset, and uses the upper four fractional bits for separable U-then-V RGBA
+interpolation with floor rounding. Each of the four taps is independently
+addressed; PSMCT24 TEXA/AEM and PSMCT16 expansion occur before filtering, TFX/TCC
+afterward. This does not fix texture swizzling, guest fractional XYZ coverage,
+the software reference's float stepping/constant-Q prestep, STQ sprites or
+native fixed-point overflow. Existing nearest controls remain covered.
+
+The BIOS pixel-watch `gs_pixel_write` fields remain available. For linear
+samples, `raw_uv`, `uv`, address and raw texel describe tap 00, while
+`expanded_texel` is the combined filtered RGBA before TFX. Additional
+`gs_pixel_filter` lines report unshifted signed16.16 coordinates and four-bit
+fractions, and `gs_pixel_filter_tap` lines identify mapped UV/address/raw/decoded
+RGBA for taps 00,10,01,11. Observers remain read-only and observational. Filtering
+intentionally changes previews and VRAM hashes of existing traces; compare the
+same renderer revision when asserting replay equality.
 
 ## Compare a reference draw
 

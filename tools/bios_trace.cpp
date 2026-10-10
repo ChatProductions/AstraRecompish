@@ -203,6 +203,19 @@ void print_gs_pixel_history(const ps2vita::Emulator& emulator,
           texture.u, texture.v, texture.address,
           texture.raw_texel, texture.expanded_texel,
           texture.vertex_color, texture.output_color);
+      if (texture.valid && texture.linear) {
+        std::printf("gs_pixel_filter address=%08X event=%llu mode=base-linear "
+                    "fixed_uv=%lld,%lld fraction_uv=%u,%u tap_order=00,10,01,11\n",
+            write.address, static_cast<unsigned long long>(index + 1u),
+            static_cast<long long>(texture.fixed_u), static_cast<long long>(texture.fixed_v),
+            texture.fraction_u, texture.fraction_v);
+        for (unsigned tap = 0; tap < texture.tap_address.size(); ++tap)
+          std::printf("gs_pixel_filter_tap address=%08X event=%llu tap=%u uv=%u,%u "
+                      "texture_address=%08X raw_texel=%08X expanded_texel=%08X\n",
+              write.address, static_cast<unsigned long long>(index + 1u), tap,
+              texture.tap_u[tap], texture.tap_v[tap], texture.tap_address[tap],
+              texture.tap_raw[tap], texture.tap_expanded[tap]);
+      }
     }
   }
 }

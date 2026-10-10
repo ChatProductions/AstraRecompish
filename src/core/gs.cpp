@@ -197,7 +197,8 @@ void Gs::line(GsVertex a, GsVertex b) {
 }
 
 void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
-                  const TextureSampler& sample, unsigned st_width, unsigned st_height) {
+                  const TextureSampler& sample, unsigned st_width, unsigned st_height,
+                  const FixedTextureSampler& fixed_sample) {
   std::int64_t area = edge(a, b, c.x, c.y);
   // A collapsed triangle has no coverage; it is not a line primitive.
   if (area == 0) return;
@@ -240,14 +241,15 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
       std::uint32_t color = 0;
       for (unsigned shift = 0; shift < 32; shift += 8)
         color |= mix_channel(a.color, b.color, c.color, wa, wb, wc, area, shift);
-      if (sample) {
+      if (sample || fixed_sample) {
         // FST UV is unsigned 10.4 fixed point. Interpolate before removing
         // the fractional bits; vertex winding swaps must also swap attributes.
         const auto coordinate = [&](unsigned shift) {
-          const auto sum = ((a.uv >> shift) & 0x3FFFu) * wa +
-                           ((b.uv >> shift) & 0x3FFFu) * wb +
-                           ((c.uv >> shift) & 0x3FFFu) * wc;
-          return static_cast<unsigned>(sum / (area * 16));
+          const auto sum = static_cast<std::int64_t>((a.uv >> shift) & 0x3FFFu) * wa +
+                           static_cast<std::int64_t>((b.uv >> shift) & 0x3FFFu) * wb +
+                           static_cast<std::int64_t>((c.uv >> shift) & 0x3FFFu) * wc;
+          return fixed_sample ? static_cast<std::int64_t>(sum * 4096 / area) :
+              static_cast<std::int64_t>(sum / (area * 16));
         };
         if (st_width != 0u && st_height != 0u) {
           // S, T and Q are independently affine in screen space. Divide AFTER
@@ -269,9 +271,13 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
             const auto fixed = static_cast<std::int64_t>(coordinate * 65536.0);
             return fixed >= 0 ? fixed / 65536 : -((-fixed + 65535) / 65536);
           };
-          color = sample(texel(u), texel(v), color);
+          color = fixed_sample ? fixed_sample(
+              static_cast<std::int64_t>(u * 65536.0),
+              static_cast<std::int64_t>(v * 65536.0), color) :
+              sample(texel(u), texel(v), color);
         } else {
-          color = sample(coordinate(0), coordinate(16), color);
+          color = fixed_sample ? fixed_sample(coordinate(0), coordinate(16), color) :
+              sample(coordinate(0), coordinate(16), color);
         }
       }
       write(x, y, z, color);

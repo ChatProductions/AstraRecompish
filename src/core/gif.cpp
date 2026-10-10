@@ -255,8 +255,16 @@ void Gif::write_image(const std::uint8_t* data, std::size_t size) {
   local_bytes_written_ += pixels * bytes_per_pixel;
 }
 
+bool Gif::base_level_linear(unsigned context) const {
+  // With MXL=0 there is no LOD choice and MMIN is ignored: MMAG selects the
+  // base-level filter. MXL>0 still uses the old nearest fallback; mipmapping
+  // and LOD selection are not implemented by this logical raster backend.
+  const auto tex1 = tex1_[context & 1u];
+  return ((tex1 >> 2u) & 7u) == 0u && (tex1 & (1ull << 5u)) != 0u;
+}
+
 std::uint32_t Gif::sample_texture(unsigned context, std::int64_t raw_u, std::int64_t raw_v,
-                                  std::uint32_t vertex_color) const {
+                                  std::uint32_t vertex_color, bool linear) const {
   const auto tex0 = tex0_[context & 1u];
   const auto base = static_cast<std::uint32_t>((tex0 & 0x3FFFu) * 256u);
   const auto width = static_cast<unsigned>((tex0 >> 14) & 0x3Fu) * 64u;
@@ -274,47 +282,96 @@ std::uint32_t Gif::sample_texture(unsigned context, std::int64_t raw_u, std::int
     default: return (static_cast<std::uint64_t>(coordinate) & minimum) | maximum; // REGION_REPEAT
     }
   };
-  const auto u = address_coordinate(raw_u, clamp & 3u, 1u << ((tex0 >> 26) & 15u),
-                         (clamp >> 4) & 0x3FFu, (clamp >> 14) & 0x3FFu);
-  const auto v = address_coordinate(raw_v, (clamp >> 2) & 3u, 1u << ((tex0 >> 30) & 15u),
-                         (clamp >> 24) & 0x3FFu, (clamp >> 34) & 0x3FFu);
-  std::uint32_t color = 0;
-  std::uint32_t texel_address = 0, raw_texel = 0;
-  if (format == 0u || format == 1u) {
-    texel_address = base + static_cast<std::uint32_t>(
-        (static_cast<std::uint64_t>(v) * width + u) * 4u);
-    color = raw_texel = read_local32(texel_address);
-    if (format == 1u) {
-      color &= 0x00FFFFFFu;
-      const auto alpha = (texa_ & 0x8000u) != 0u && color == 0u ? 0u : texa_ & 0xFFu;
-      color |= static_cast<std::uint32_t>(alpha) << 24;
+  if (format > 2u) return vertex_color;
+  struct Tap {
+    unsigned u = 0, v = 0;
+    std::uint32_t address = 0, raw = 0, expanded = 0;
+  };
+  const auto read_tap = [&](std::int64_t x, std::int64_t y) {
+    Tap tap;
+    tap.u = address_coordinate(x, clamp & 3u, 1u << ((tex0 >> 26) & 15u),
+                              (clamp >> 4) & 0x3FFu, (clamp >> 14) & 0x3FFu);
+    tap.v = address_coordinate(y, (clamp >> 2) & 3u, 1u << ((tex0 >> 30) & 15u),
+                              (clamp >> 24) & 0x3FFu, (clamp >> 34) & 0x3FFu);
+    const auto offset = static_cast<std::uint64_t>(tap.v) * width + tap.u;
+    tap.address = (base + static_cast<std::uint32_t>(offset * (format == 2u ? 2u : 4u))) & 0x3FFFFFu;
+    if (format <= 1u) {
+      tap.expanded = tap.raw = read_local32(tap.address);
+      if (format == 1u) {
+        tap.expanded &= 0x00FFFFFFu;
+        const auto alpha = (texa_ & 0x8000u) != 0u && tap.expanded == 0u ? 0u : texa_ & 0xFFu;
+        tap.expanded |= static_cast<std::uint32_t>(alpha) << 24u;
+      }
+    } else {
+      const auto pixel = static_cast<std::uint16_t>(local_memory_[tap.address] |
+          (local_memory_[(tap.address + 1u) & 0x3FFFFFu] << 8u));
+      tap.raw = pixel;
+      const auto alpha = (pixel & 0x8000u) != 0u ? (texa_ >> 32u) & 0xFFu :
+          ((texa_ & 0x8000u) != 0u && pixel == 0u ? 0u : texa_ & 0xFFu);
+      tap.expanded = ((pixel & 0x1Fu) << 3u) |
+          (((pixel >> 5u) & 0x1Fu) << 11u) |
+          (((pixel >> 10u) & 0x1Fu) << 19u) |
+          (static_cast<std::uint32_t>(alpha) << 24u);
     }
-  } else if (format == 2u) {
-    const auto address = base + static_cast<std::uint32_t>(
-        (static_cast<std::uint64_t>(v) * width + u) * 2u);
-    texel_address = address;
-    const auto pixel = static_cast<std::uint16_t>(
-        local_memory_[address & 0x3FFFFFu] |
-        (local_memory_[(address + 1u) & 0x3FFFFFu] << 8u));
-    raw_texel = pixel;
-    const auto expand = [](std::uint32_t component) {
-      return component << 3u;
+    return tap;
+  };
+  const auto fixed_u = raw_u, fixed_v = raw_v;
+  unsigned fraction_u = 0, fraction_v = 0;
+  if (linear) {
+    // Callers bound 16.16 values before conversion. Apply the half-texel
+    // offset, then floor signed coordinates without implementation-defined
+    // right shifts. Four high fractional bits select GS interpolation weight.
+    const auto split = [](std::int64_t fixed, unsigned& fraction) {
+      fixed -= 32768;
+      const auto integer = fixed >= 0 ? fixed / 65536 : -((-fixed + 65535) / 65536);
+      fraction = static_cast<unsigned>((fixed - integer * 65536) / 4096);
+      return integer;
     };
-    const auto alpha = (pixel & 0x8000u) != 0u ? (texa_ >> 32u) & 0xFFu :
-        ((texa_ & 0x8000u) != 0u && pixel == 0u ? 0u : texa_ & 0xFFu);
-    color = expand(pixel & 0x1Fu) |
-            (expand((pixel >> 5) & 0x1Fu) << 8u) |
-            (expand((pixel >> 10) & 0x1Fu) << 16u) |
-            (static_cast<std::uint32_t>(alpha) << 24u);
-  } else {
-    return vertex_color;
+    raw_u = split(fixed_u, fraction_u);
+    raw_v = split(fixed_v, fraction_v);
+  }
+  std::array<Tap, 4> taps{};
+  taps[0] = read_tap(raw_u, raw_v);
+  auto color = taps[0].expanded;
+  if (linear) {
+    // Decode TEXA/AEM per tap before interpolation. Complete all reads before
+    // the fragment is written, including when source and target alias.
+    taps[1] = read_tap(raw_u + 1, raw_v);
+    taps[2] = read_tap(raw_u, raw_v + 1);
+    taps[3] = read_tap(raw_u + 1, raw_v + 1);
+    const auto lerp = [](int a, int b, unsigned fraction) {
+      const int product = (b - a) * static_cast<int>(fraction);
+      return a + (product >= 0 ? product / 16 : -((-product + 15) / 16));
+    };
+    color = 0;
+    for (unsigned shift = 0; shift < 32u; shift += 8u) {
+      const auto component = [&](unsigned tap) {
+        return static_cast<int>((taps[tap].expanded >> shift) & 0xFFu);
+      };
+      const auto top = lerp(component(0), component(1), fraction_u);
+      const auto bottom = lerp(component(2), component(3), fraction_u);
+      color |= static_cast<std::uint32_t>(lerp(top, bottom, fraction_v)) << shift;
+    }
   }
   const auto texture_function = static_cast<unsigned>((tex0 >> 35) & 3u);
   const bool texture_alpha = (tex0 & (1ull << 34)) != 0u;
   const auto traced = [&](std::uint32_t output) {
-    if (gs_.pixel_watch_enabled())
-      gs_.set_texture_trace({true, raw_u, raw_v, u, v, format,
-          texel_address & 0x3FFFFFu, raw_texel, color, vertex_color, output});
+    if (gs_.pixel_watch_enabled()) {
+      GsTextureTrace trace{true, raw_u, raw_v, taps[0].u, taps[0].v, format,
+          taps[0].address, taps[0].raw, color, vertex_color, output};
+      trace.linear = linear;
+      if (linear) {
+        trace.fixed_u = fixed_u; trace.fixed_v = fixed_v;
+        trace.fraction_u = fraction_u; trace.fraction_v = fraction_v;
+        for (unsigned index = 0; index < taps.size(); ++index) {
+          trace.tap_u[index] = taps[index].u; trace.tap_v[index] = taps[index].v;
+          trace.tap_address[index] = taps[index].address;
+          trace.tap_raw[index] = taps[index].raw;
+          trace.tap_expanded[index] = taps[index].expanded;
+        }
+      }
+      gs_.set_texture_trace(trace);
+    }
     return output;
   };
   if (texture_function == 1u) { // DECAL
@@ -494,11 +551,15 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
         first.color = second.color = vertex.color;
       if ((prim_ & 0x10u) != 0u) {
         const bool fixed_uv = (prim_ & 0x100u) != 0u;
-        gs_.triangle(first, second, vertex,
-            [this, context](std::int64_t u, std::int64_t v, std::uint32_t color) {
-              return sample_texture(context, u, v, color);
-            }, fixed_uv ? 0u : 1u << ((tex0_[context] >> 26) & 15u),
-               fixed_uv ? 0u : 1u << ((tex0_[context] >> 30) & 15u));
+        const bool linear = base_level_linear(context);
+        const Gs::TextureSampler sampler =
+            [this, context, linear](std::int64_t u, std::int64_t v, std::uint32_t color) {
+              return sample_texture(context, u, v, color, linear);
+            };
+        gs_.triangle(first, second, vertex, linear ? Gs::TextureSampler{} : sampler,
+            fixed_uv ? 0u : 1u << ((tex0_[context] >> 26) & 15u),
+            fixed_uv ? 0u : 1u << ((tex0_[context] >> 30) & 15u),
+            linear ? sampler : Gs::FixedTextureSampler{});
       } else {
         gs_.triangle(first, second, vertex);
       }
@@ -635,6 +696,7 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
   const auto color = static_cast<std::uint32_t>(rgbaq_);
   const bool textured_uv = (prim_ & (1u << 4)) != 0u &&
                            (prim_ & (1u << 8)) != 0u;
+  const bool linear = textured_uv && base_level_linear(context);
   const auto u0 = static_cast<int>(first_uv_ & 0x3FFFu);
   const auto v0 = static_cast<int>((first_uv_ >> 16) & 0x3FFFu);
   const auto u1 = static_cast<int>(uv_ & 0x3FFFu);
@@ -646,15 +708,20 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
         // A single rational division retains UV fractions and affine prestep
         // from the original (possibly reversed) geometry. Truncating a signed
         // slope before adding UV0 would choose the wrong texel at boundaries.
-        const auto u = (std::int64_t{u0} * span_x +
-            std::int64_t{x * kFixedRasterStep - origin_x} * (u1 - u0)) /
-            (std::int64_t{span_x} * 16);
-        const auto v = (std::int64_t{v0} * span_y +
-            std::int64_t{y * kFixedRasterStep - origin_y} * (v1 - v0)) /
-            (std::int64_t{span_y} * 16);
-        pixel_color = sample_texture(context,
-            std::max<std::int64_t>(0, u),
-            std::max<std::int64_t>(0, v), color);
+        const auto u_numerator = std::int64_t{u0} * span_x +
+            std::int64_t{x * kFixedRasterStep - origin_x} * (u1 - u0);
+        const auto v_numerator = std::int64_t{v0} * span_y +
+            std::int64_t{y * kFixedRasterStep - origin_y} * (v1 - v0);
+        if (linear) {
+          // Convert 10.4 to 16.16 without first discarding the affine fraction.
+          pixel_color = sample_texture(context, u_numerator * 4096 / span_x,
+              v_numerator * 4096 / span_y, color, true);
+        } else {
+          const auto u = u_numerator / (std::int64_t{span_x} * 16);
+          const auto v = v_numerator / (std::int64_t{span_y} * 16);
+          pixel_color = sample_texture(context, std::max<std::int64_t>(0, u),
+              std::max<std::int64_t>(0, v), color);
+        }
       }
       gs_.point({x, y, z, pixel_color});
     }

@@ -73,6 +73,23 @@ def owned_payloads():
     return [clear, upload, draws, tail]
 
 
+def filter_payloads(tex1, texels, uv):
+    # Owned 2x2 PSM32 texture at byte 0x300000, disjoint from the 640-wide
+    # FRAME0. Constant 10.4 UV makes the interpolation calculation independent
+    # of sprite slopes, raster coverage interpolation, and captured assets.
+    texture_block = 0x3000
+    upload = ad((0x50, (texture_block << 32) | (1 << 48)), (0x51, 0),
+                (0x52, 2 | (2 << 32)), (0x53, 0))
+    upload += struct.pack("<QQ4I", (2 << 58) | 0x8001, 0, *texels)
+    tex0 = (texture_block | (1 << 14) | (1 << 26) | (1 << 30) |
+            (1 << 34) | (1 << 35))  # TCC=RGBA, TFX=DECAL.
+    draws = ad((0x4C, 10 << 16), (0x18, 0), (0x40, 0x07FF000007FF0000),
+               (0x47, 0), (0x46, 1), (6, tex0), (0x14, tex1), (0x08, 0),
+               (0, 0x116), (1, 0x3F80000080808080),
+               (3, uv), (5, xyz(0, 0)), (3, uv), (5, xyz(8, 8)))
+    return [upload, draws]
+
+
 def linear_pixel(x, y):
     # A different word at every relevant U/V; retained alpha tests raw hashing
     # independently from the RGB-only PPM, including a PSMCT24 view.
@@ -134,6 +151,50 @@ class GifReplayTests(unittest.TestCase):
                                *map(str, arguments)], env=clean_environment(),
                               text=True, stdout=subprocess.PIPE,
                               stderr=subprocess.PIPE, timeout=20, check=False)
+
+    def assert_filter_replay(self, label, tex1, texels, uv, expected_color):
+        trace = self.directory / f"filter-{label}.astgif"
+        image = self.directory / f"filter-{label}.ppm"
+        trace.write_bytes(serialized_trace(filter_payloads(tex1, texels, uv)))
+        result = self.replay("--framebuffer", image, trace=trace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("trace_validated=1", result.stdout)
+        self.assertIn("trace_packets=2", result.stdout)
+        self.assertIn("replay_packets=2", result.stdout)
+        self.assertIn("gif_packets=2 rejected=0 pending=0 sprites=1 points=0 lines=0 "
+                      "triangles=0 exported_triangles=0", result.stdout)
+        # The 8x8 native sprite covers exactly 2x2 quarter-raster samples. A
+        # full-frame expectation also catches accidental texture/FRAME alias.
+        expected = [expected_color if x < 2 and y < 2 else 0
+                    for y in range(112) for x in range(160)]
+        self.assertEqual(image.read_bytes(), ppm_words(expected, 160, 112))
+        self.assertIn(f"framebuffer_hash={hash_words(expected)}", result.stdout)
+        self.assertIn("nonzero_rgb_pixels=4/17920", result.stdout)
+
+    def test_serialized_tex1_selects_base_level_linear_with_two_stage_rounding(self):
+        texels = (0x80402010, 0x80402013, 0x80402010, 0x80402011)
+        uv = 16 | (16 << 16)  # U=V=1; half-texel subtraction gives .5,.5.
+        # R row averages are floor((16+19)/2)=17 and floor((16+17)/2)=16;
+        # the second lerp yields 16, not the single weighted-sum result 17.
+        # Other channels remain G32/B64/A128. Nearest chooses bottom-right 17.
+        for tex1, expected in ((0, 0x80402011), (0x40, 0x80402011),
+                               (0x20, 0x80402010), (0x60, 0x80402010)):
+            with self.subTest(tex1=f"{tex1:X}"):
+                # Only TEX1 differs: MXL=0 ignores MMIN (bit 6); MMAG (bit 5)
+                # selects LINEAR without a forced filter or mip/LOD assumption.
+                self.assert_filter_replay(f"midpoint-{tex1:X}", tex1, texels, uv,
+                                          expected)
+
+    def test_serialized_linear_descending_channel_uses_floor_not_truncation(self):
+        texels = (0x80F040FF, 0x80004000, 0x80F040FF, 0x80004000)
+        uv = 9 | (8 << 16)  # U=9/16,V=1/2 => fraction U=1/16,V=0.
+        # Independent positive-weight form: R=floor(15*255/16)=239,
+        # B=floor(15*240/16)=225, G64/A128 unchanged. Truncating the signed
+        # R delta toward zero would incorrectly yield 240. Nearest reads 255.
+        for tex1, expected in ((0, 0x80F040FF), (0x60, 0x80E140EF)):
+            with self.subTest(tex1=f"{tex1:X}"):
+                self.assert_filter_replay(f"descending-{tex1:X}", tex1, texels, uv,
+                                          expected)
 
     def test_complete_replay_and_all_triangle_rows(self):
         image = self.directory / "full.ppm"

@@ -66,7 +66,8 @@ performance decision.
 It now executes a user-supplied retail BIOS through EE hardware initialization,
 relocation into RAM, IOP reset-ROM startup, DECI2 startup, bidirectional SIF boot
 traffic, and repeated `Restart Without Memory Clear` completion.
-It does **not yet render a confirmed recognizable PS2 startup or run retail games**. Those require deeper IOP, DMA,
+It now renders **readable startup-title lettering in PC graphics replay**, but
+does **not yet verify the complete boot animation or run retail games**. Those require deeper IOP, DMA,
 interrupt, GIF/GS, SPU2, and disc emulation described in the roadmap. The existing
 core is real BIOS execution, not a renamed frontend or a fake compatibility screen.
 
@@ -92,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **37/37 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **39/39 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -100,8 +101,8 @@ quarter-resolution rasterization, PSMCT32/24 targets, and a preview of the activ
 draw target. Native GS swizzling, depth-buffer routing, display scanout and
 broader formats/filtering remain incomplete. Earlier 300-million-step BIOS
 captures showed textured rectangles, not a recognizable intro.
-The completed feedback-enabled replay changes that image, including blue
-textured regions, but still does **not** show a recognizable intro. Its execution
+That earlier feedback-enabled replay changed the image, including blue
+textured regions, but did **not** show a recognizable intro. Its execution
 endpoint and draw counts are unchanged; this is not further BIOS execution.
 
 This is evidence that part of the guest graphics pipeline reaches the rasterizer,
@@ -116,14 +117,29 @@ The new **640×448 native-pixel diagnostic replay** renders the actual guest
 stream again, rather than enlarging the 160×112 image. A selected 640×256
 logical framebuffer now shows readable **Sony Computer Entertainment** lettering,
 cloud detail and colored lights. One-pixel geometry and 64 independently colored
-texture pixels have owned regression tests. The default/Vita raster remains
-unchanged; this is not a native-resolution Vita performance result.
+texture pixels have owned regression tests. The default/Vita raster grid remains
+quarter-sized; this is not a native-resolution Vita performance result.
 
 On the same sprite-50 reference sample grid, mean RGB error improves from
 **0.62 to 0.28**, and black-mask disagreements from **208 to 97**. These are
 local source-surface checks, not full-frame equality. Native GS swizzling,
 subpixel coverage, filtering, display timing and the complete animation still
 need verification. See the [full-pixel replay checkpoint](docs/SESSION_2026-10-10.md).
+
+### Base-level texture filtering checkpoint
+
+TEX1 now selects a four-tap linear filter for the bounded no-mipmap path,
+including signed STQ and fractional FST triangle/sprite sampling. Each tap is
+independently wrapped/clamped and decoded before RGBA filtering and the texture
+function. Pixel diagnostics record all four taps, not just one misleading texel.
+
+On the same native sprite-50 source grid, mean RGB error falls from **0.276 to
+0.251**, with **7,322/10,240 exact RGB samples**. Black-mask disagreements rise
+from **97 to 103**: this is a modest color improvement, not uniform pixel
+correctness. The frozen 800M replay still has readable lettering, unchanged
+input/draw counts and no GIF parser rejection. Mipmap/LOD selection, subpixel
+coverage, native VRAM and scanout remain incomplete. See the
+[filtering rules, regression tests and saved hashes](docs/SESSION_2026-10-10.md#base-level-bilinear-filtering-follow-up).
 
 ### Cloud-background and EE SQRT milestone
 

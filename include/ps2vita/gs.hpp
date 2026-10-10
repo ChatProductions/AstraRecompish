@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <vector>
@@ -29,6 +30,13 @@ struct GsTextureTrace {
   unsigned u = 0, v = 0, format = 0;
   std::uint32_t address = 0, raw_texel = 0, expanded_texel = 0;
   std::uint32_t vertex_color = 0, output_color = 0;
+  // Linear samples: old address/raw fields describe tap 00, while
+  // expanded_texel is the filtered color BEFORE the texture function.
+  bool linear = false;
+  std::int64_t fixed_u = 0, fixed_v = 0; // Pre-half-texel signed 16.16.
+  unsigned fraction_u = 0, fraction_v = 0;
+  std::array<unsigned, 4> tap_u{}, tap_v{}; // 00, 10, 01, 11.
+  std::array<std::uint32_t, 4> tap_address{}, tap_raw{}, tap_expanded{};
 };
 struct GsPixelWrite {
   std::uint32_t address = 0, before = 0, after = 0, input_color = 0, z = 0;
@@ -78,9 +86,12 @@ public:
   void line(GsVertex a, GsVertex b);
   using TextureSampler = std::function<std::uint32_t(std::int64_t, std::int64_t,
                                                      std::uint32_t)>;
+  // Optional alternative accepting signed 16.16 rather than integer texels.
+  using FixedTextureSampler = TextureSampler;
   void triangle(GsVertex a, GsVertex b, GsVertex c,
                 const TextureSampler& sample = {},
-                unsigned st_width = 0, unsigned st_height = 0);
+                unsigned st_width = 0, unsigned st_height = 0,
+                const FixedTextureSampler& fixed_sample = {});
 
   // Preview of the current draw target, not privileged GS display scanout.
   const std::uint32_t* pixels() const;
