@@ -173,6 +173,11 @@ single-step also uses that scheduler. This removes a frontend request ceiling,
 not a measured hardware bottleneck. See the
 [pacing policy and responsiveness limits](docs/SESSION_2026-10-10_VITA_PACING.md).
 
+A follow-up sprite-row optimization was discarded after ARM inspection showed
+the compiler already performed it. The stronger 195-check per-grid sprite
+fixtures were retained; see the
+[experiment and keep/discard evidence](docs/SESSION_2026-10-10_SPRITE_ROWS.md).
+
 ### Cloud-background and EE SQRT milestone
 
 A concrete EE floating-point operand bug flattened the cloud brightness table.

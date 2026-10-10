@@ -62,7 +62,7 @@ std::uint32_t texel(unsigned u, unsigned v) {
   return 0x80000000u | u | (v << 8u) | ((u ^ v) << 16u);
 }
 
-void append_texture(Packet& packet) {
+void append_texture(Packet& packet, bool linear_empty) {
   // An owned 64x64 PSMCT32 nearest/DECAL texture in the existing linear model.
   constexpr std::uint64_t base = 0x1000ull; // 0x100000 byte address.
   packet.ad((base << 32u) | (1ull << 48u), 0x50u);
@@ -76,7 +76,9 @@ void append_texture(Packet& packet) {
       packet.word64(texel(u, v) | (std::uint64_t{texel(u + 1u, v)} << 32u));
   packet.ad(base | (1ull << 14u) | (6ull << 26u) | (6ull << 30u) |
                 (1ull << 34u) | (1ull << 35u), 0x06u);
-  packet.ad(0u, 0x14u); // TEX1: nearest; filtering is outside this fixture.
+  // Linear is used only for empty-footprint guards; bilinear color/rounding
+  // has its own independent fixture. Normal color cases remain nearest.
+  packet.ad(linear_empty ? 1u << 5u : 0u, 0x14u);
   packet.ad(5u, 0x08u); // Clamp both axes to the 64x64 texture.
 }
 
@@ -107,12 +109,15 @@ unsigned texture_coordinate(unsigned first, unsigned second,
   return static_cast<unsigned>(std::clamp(std::floor(value), 0.0L, 63.0L));
 }
 
-void run_case(const Rectangle& rect, const Uv* uv = nullptr) {
+void run_case(const Rectangle& rect, const Uv* uv = nullptr,
+              bool linear_empty = false) {
   ps2vita::Gs gs;
   ps2vita::Gif gif(gs);
+  gif.enable_triangle_trace(true);
+  gif.capture_sprite_framebuffer_at(0u);
   gs.clear(kBackground);
   Packet packet;
-  if (uv != nullptr) append_texture(packet);
+  if (uv != nullptr) append_texture(packet, linear_empty);
   // FBW=0 intentionally retains the standalone preview target. Coverage is
   // independent of shared-memory target aliasing and native GS swizzling.
   packet.ad(0u, 0x4Cu);
@@ -137,10 +142,15 @@ void run_case(const Rectangle& rect, const Uv* uv = nullptr) {
             gif.triangles_emitted() == 0u,
         rect.name, "one complete owned GIF sprite is parsed");
   unsigned mismatches = 0u;
+  unsigned coverage = 0u, nonzero = 0u;
+  std::uint64_t hash = 1469598103934665603ull;
+  bool captured_pixels_match = gif.sprite_framebuffer_capture().size() ==
+      static_cast<std::size_t>(ps2vita::Gs::kWidth * ps2vita::Gs::kHeight);
   for (int y = 0; y < ps2vita::Gs::kHeight; ++y) {
     for (int x = 0; x < ps2vita::Gs::kWidth; ++x) {
       std::uint32_t expected = kBackground;
       if (covered(rect, x, y)) {
+        ++coverage;
         expected = uv == nullptr ? kSolid : texel(
             texture_coordinate(uv->u0, uv->u1, rect.x0, rect.x1,
                                x * 16 * ps2vita::Gs::kRasterScale),
@@ -148,6 +158,11 @@ void run_case(const Rectangle& rect, const Uv* uv = nullptr) {
                                y * 16 * ps2vita::Gs::kRasterScale));
       }
       const auto actual = gs.pixel(x, y);
+      hash ^= actual; hash *= 1099511628211ull;
+      nonzero += (actual & 0xFFFFFFu) != 0u;
+      if (captured_pixels_match)
+        captured_pixels_match = gif.sprite_framebuffer_capture()[
+            static_cast<std::size_t>(y * ps2vita::Gs::kWidth + x)] == actual;
       if (actual != expected) {
         if (mismatches < 3u)
           std::fprintf(stderr, "  [%s] pixel(%d,%d): %08X, expected %08X\n",
@@ -158,6 +173,15 @@ void run_case(const Rectangle& rect, const Uv* uv = nullptr) {
   }
   check(mismatches == 0u, rect.name,
         "all raster anchors have independently expected coverage/color");
+  check(!linear_empty || coverage == 0u, rect.name,
+        "linear empty-footprint control never enters the nearest-color oracle");
+  check(gif.sprite_framebuffer_captured() && captured_pixels_match, rect.name,
+        "even an empty sprite runs the complete framebuffer-capture footer");
+  check(gif.sprite_records().size() == 1u &&
+            gif.sprite_records()[0].sequence == 0u &&
+            gif.sprite_records()[0].target_hash == hash &&
+            gif.sprite_records()[0].target_nonzero_rgb == nonzero,
+        rect.name, "empty/nonempty sprite trace footer preserves ordinal and target state");
   if (mismatches != 0u)
     std::fprintf(stderr, "  [%s] %u framebuffer mismatches\n", rect.name, mismatches);
 }
@@ -212,6 +236,31 @@ int main() {
   const Uv descending{16u, 0u, 15u, 0u};
   const Rectangle descending_uv{"UV descending slope crosses nearest boundary", 0, 0, 128, 128};
   run_case(descending_uv, &descending);
+
+  const Uv reverse_y{8u, 16383u, 520u, 0u};
+  const Rectangle reversed_y{"UV reversed Y preserves high raw endpoint and row rounding",
+                              8, 520, 520, 8};
+  run_case(reversed_y, &reverse_y);
+  const Rectangle reversed_y_clipped{"UV reversed Y keeps unclipped vertical span",
+                                      8, 520, 520, 8, 5u, 5u, 23u, 23u};
+  run_case(reversed_y_clipped, &reverse_y);
+  const Uv wide_span_uv{0u, 1024u, 512u, 0u};
+  const Rectangle wide_span{"UV signed raw vertical bounds retain row coordinate",
+                             0, -32768, 512, 32767};
+  run_case(wide_span, &wide_span_uv);
+  const Uv vertical_boundary{0u, 16u, 0u, 15u};
+  run_case({"UV descending V crosses nearest boundary", 0, 0, 128, 128},
+           &vertical_boundary);
+
+  const Rectangle textured_empty[]{
+      {"textured zero-width footer", 64, 0, 64, 512},
+      {"textured zero-height footer", 0, 64, 512, 64},
+      {"textured zero-area footer", 64, 64, 64, 64},
+      {"textured invalid X scissor footer", 0, 0, 512, 512, 10u, 0u, 8u, 31u},
+      {"textured invalid Y scissor footer", 0, 0, 512, 512, 0u, 10u, 31u, 8u},
+      {"textured negative X footprint footer", -129, 0, -1, 512}};
+  for (const auto& rectangle : textured_empty)
+    for (const bool linear : {false, true}) run_case(rectangle, &reverse_y, linear);
 
   std::printf("gif_sprite_coverage_tests: %u checks, %u failures\n", checks, failures);
   return failures == 0u ? 0 : 1;
