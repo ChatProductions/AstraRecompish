@@ -98,6 +98,10 @@ class GifBenchmarkTests(unittest.TestCase):
         expected_preview, expected_vram = independent_hashes()
         baseline = self.replay()
         self.assertEqual(baseline.returncode, 0, baseline.stderr)
+        scope = {1: "native-pixel-grid", 2: "half-grid", 4: "quarter-grid"}[SCALE]
+        self.assertIn(f"gs_raster_grid width={640 // SCALE} height={448 // SCALE} "
+                      f"sample_scale={SCALE} scope={scope}-approximate-linear-gs",
+                      baseline.stdout)
         for samples in (1, 3):
             with self.subTest(samples=samples):
                 result = self.benchmark(samples)
@@ -282,7 +286,7 @@ class GifBenchmarkTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4 or sys.argv[3] not in ("1", "4"):
+    if len(sys.argv) != 4 or sys.argv[3] not in ("1", "2", "4"):
         raise SystemExit("usage: test_gif_benchmark.py BENCHMARK REPLAY SAMPLE_SCALE")
     BENCHMARK, REPLAY = map(Path, sys.argv[1:3])
     SCALE = int(sys.argv[3])

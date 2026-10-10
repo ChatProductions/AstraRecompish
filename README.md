@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **47/47 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **50/50 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -186,12 +186,22 @@ and later writes. A three-trial native-grid PC pair improves submit throughput
 by about 5%; this is not a Vita FPS measurement. See the
 [word-read evidence and sanitizer gates](docs/SESSION_2026-10-10_TEXTURE_WORD_READS.md).
 
-The Vita GS view now defaults to a fixed region from the buffer selected by
-PMODE/DISPFB, instead of the latest drawing FRAME. L switches back to the
-draw-target diagnostic; unsupported display selections blank explicitly.
-The 172-check owned fixture preserves VRAM and draw state. This remains a
-linear-memory region probe, not accurate scanout; see the
-[display-preview contract and saved session](docs/SESSION_2026-10-10_DISPLAY_PREVIEW.md).
+The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
+samples using the selected DISPLAY's requested source extent. The NTSC/PAL
+INT+FFMD geometry avoids reading adjacent storage below a half-height source;
+unrecognized interlaced modes blank explicitly. L returns to the active
+draw-target diagnostic. The old fixed-region helper remains available for
+diagnostics. The 172-check buffer fixture and new 196,989-check extent fixture
+cover live reads, clipping and mode selection. Neither implements timed scanout,
+field composition or native swizzling; see the
+[source-extent contract and saved session](docs/SESSION_2026-10-10_DISPLAY_EXTENT.md).
+
+A separate **320x224 PC-only half-grid replay** now preserves readable startup
+lettering from the same 800M graphics stream, between the default quarter grid
+and the expensive native grid. It remains an approximate two-by-two-tile
+renderer, not a sharper Vita mode or complete boot animation. Owned footprint,
+texture and wrapped-mask tests plus per-grid complete-state checks are saved in
+the [density experiment](docs/SESSION_2026-10-10_HALF_GRID.md).
 
 Exact monitor scaling now uses contiguous row writes rather than 17,920
 rectangle calls per preview. The owned PC copy probe takes 44% less time in

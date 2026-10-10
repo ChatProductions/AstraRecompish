@@ -391,7 +391,8 @@ int main(int argc, char** argv) {
       static_cast<unsigned>(ps2vita::Gs::kHeight),
       static_cast<unsigned>(ps2vita::Gs::kRasterScale),
       ps2vita::Gs::kRasterScale == 1u ? "native-pixel-grid-approximate-linear-gs"
-                                    : "quarter-grid-approximate-linear-gs");
+          : ps2vita::Gs::kRasterScale == 2u ? "half-grid-approximate-linear-gs"
+                                          : "quarter-grid-approximate-linear-gs");
   std::printf("gif_replay trace_validated=1 scope=fresh-instance-reset-starting-serialized-astra-gif "
               "not-pcsx2-dump-not-hardware-timeline stop=%s "
               "trace_packets=%llu trace_payload_bytes=%llu replay_packets=%llu "

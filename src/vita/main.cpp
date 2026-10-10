@@ -201,25 +201,33 @@ void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
       std::snprintf(detail, sizeof(detail), "FRAME %016llX / NOT THE DISPLAY BUFFER",
           static_cast<unsigned long long>(emu.gs().color_frame()));
     } else {
-      const auto status = display_preview.update(emu.memory().read64(0x12000000u),
+      const auto status = display_preview.update_source(emu.memory().read64(0x12000000u),
           emu.memory().read64(0x12000070u), emu.memory().read64(0x12000090u),
+          emu.memory().read64(0x12000080u), emu.memory().read64(0x120000A0u),
+          emu.memory().read64(0x12000010u),
+          emu.memory().read64(0x12000020u),
           [&](std::uint32_t address) { return emu.gif().read_local32(address); });
       screen.blit_160x112(display_preview.pixels().data());
       const auto& selected = display_preview.selection();
       if (selected.circuit != 0u)
-        std::snprintf(heading, sizeof(heading), "GS DISPFB%u LINEAR / L: VIEW / R: RETURN",
+        std::snprintf(heading, sizeof(heading), "GS DISPFB%u SOURCE REGION / L: VIEW / R: RETURN",
             selected.circuit);
       else
         std::snprintf(heading, sizeof(heading), "GS DISPLAY PROBE / L: VIEW / R: RETURN");
       if (status == ps2vita::GsLinearDisplayStatus::Ready) {
-        std::snprintf(detail, sizeof(detail), "BASE %06X WIDTH %u ORIGIN %u,%u / 640X448 REGION",
+        std::snprintf(detail, sizeof(detail), "BASE %06X STRIDE %u ORIGIN %u,%u / SOURCE %uX%u%s",
             selected.framebuffer.base_bytes(), selected.framebuffer.width_pixels(),
-            selected.framebuffer.dbx, selected.framebuffer.dby);
+            selected.framebuffer.dbx, selected.framebuffer.dby,
+            display_preview.source_width(), display_preview.source_height(),
+            display_preview.source_width() > 640u || display_preview.source_height() > 448u ?
+                " / CROP 640X448" : "");
       } else {
         const char* reason = status == ps2vita::GsLinearDisplayStatus::Disabled ?
             "PMODE DISABLED" : status == ps2vita::GsLinearDisplayStatus::MultipleCircuits ?
             "DUAL-CIRCUIT MIXING NOT IMPLEMENTED" :
             status == ps2vita::GsLinearDisplayStatus::ZeroWidth ? "ZERO BUFFER WIDTH" :
+            status == ps2vita::GsLinearDisplayStatus::UnsupportedMode ? "INTERLACED MODE NOT SUPPORTED" :
+            status == ps2vita::GsLinearDisplayStatus::EmptyExtent ? "EMPTY SOURCE EXTENT" :
             "UNSUPPORTED DISPLAY PIXEL FORMAT";
         std::snprintf(detail, sizeof(detail), "%s / L FOR DRAW-TARGET DIAGNOSTIC", reason);
       }

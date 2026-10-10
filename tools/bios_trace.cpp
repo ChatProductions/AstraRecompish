@@ -234,10 +234,15 @@ bool write_gs_step_snapshot(ps2vita::Emulator& emulator,
   const auto pmode = emulator.memory().read64(0x12000000u);
   const auto dispfb1 = emulator.memory().read64(0x12000070u);
   const auto dispfb2 = emulator.memory().read64(0x12000090u);
-  const auto display2 = ps2vita::GsDisplayFramebuffer::decode(dispfb2);
+  const auto smode1 = emulator.memory().read64(0x12000010u);
+  const auto smode2 = emulator.memory().read64(0x12000020u);
+  const auto display1 = emulator.memory().read64(0x12000080u);
+  const auto display2 = emulator.memory().read64(0x120000A0u);
+  const auto framebuffer2 = ps2vita::GsDisplayFramebuffer::decode(dispfb2);
   std::printf("gs_frame_step step=%llu ee_cycle=%llu next_ee_pc=%08X "
               "scope=active-draw-target-not-scanout FRAME=%016llX "
               "PMODE=%016llX DISPFB1=%016llX DISPFB2=%016llX "
+              "SMODE1=%016llX SMODE2=%016llX DISPLAY1=%016llX DISPLAY2=%016llX "
               "display2_base=%08X display2_width=%u path=%s\n",
       static_cast<unsigned long long>(step),
       static_cast<unsigned long long>(emulator.cpu().state().cycles),
@@ -246,7 +251,11 @@ bool write_gs_step_snapshot(ps2vita::Emulator& emulator,
       static_cast<unsigned long long>(pmode),
       static_cast<unsigned long long>(dispfb1),
       static_cast<unsigned long long>(dispfb2),
-      display2.base_bytes(), display2.width_pixels(), path.c_str());
+      static_cast<unsigned long long>(smode1),
+      static_cast<unsigned long long>(smode2),
+      static_cast<unsigned long long>(display1),
+      static_cast<unsigned long long>(display2),
+      framebuffer2.base_bytes(), framebuffer2.width_pixels(), path.c_str());
   for (const auto& history : histories)
     std::printf("gs_pixel_sample step=%llu address=%08X raw=%08X "
                 "raster_operations=%llu\n",
@@ -272,6 +281,18 @@ bool write_gs_step_snapshot(ps2vita::Emulator& emulator,
         static_cast<unsigned long long>(raw_fb), display_fb.fbw, display_fb.psm);
     return true;
   }
+  const auto raw_display = circuit == 1u ? display1 : display2;
+  const auto window = ps2vita::GsDisplayWindow::decode(raw_display);
+  const auto source_width = window.source_width();
+  const auto source_height = window.source_height(smode1, smode2);
+  const char* source_status = !ps2vita::GsDisplayWindow::supports_source_mode(smode1, smode2) ?
+      "unsupported-mode" : source_width == 0u || source_height == 0u ? "empty-extent" : "ready";
+  std::printf("gs_frame_step_source step=%llu circuit=%u SMODE1=%016llX SMODE2=%016llX "
+              "DISPLAY=%016llX width=%u height=%u status=%s "
+              "scope=requested-source-extent-not-scanout\n",
+      static_cast<unsigned long long>(step), circuit,
+      static_cast<unsigned long long>(smode1), static_cast<unsigned long long>(smode2),
+      static_cast<unsigned long long>(raw_display), source_width, source_height, source_status);
   const auto display_path = path + ".linear-display.ppm";
   std::ofstream display_output(display_path, std::ios::binary | std::ios::trunc);
   display_output << "P6\n" << ps2vita::Gs::kWidth << ' '
@@ -1398,6 +1419,11 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(emulator.memory().read64(address)));
   }
   const auto pmode = emulator.memory().read64(0x12000000u);
+  const auto smode1 = emulator.memory().read64(0x12000010u);
+  const auto smode2 = emulator.memory().read64(0x12000020u);
+  std::printf("gs_modes SMODE1=%016llX SMODE2=%016llX source_mode=%s\n",
+      static_cast<unsigned long long>(smode1), static_cast<unsigned long long>(smode2),
+      ps2vita::GsDisplayWindow::supports_source_mode(smode1, smode2) ? "supported" : "unsupported");
   std::printf("gs_pmode=%016llX en1=%u en2=%u slbg=%u\n",
       static_cast<unsigned long long>(pmode),
       static_cast<unsigned>(pmode & 1u),

@@ -54,15 +54,16 @@ struct GsPixelWrite {
 class Gs {
 public:
   // The default/Vita backend samples one anchor per 4x4 native tile. A
-  // separately compiled host diagnostic may use scale 1 for a native pixel
-  // grid; every consumer of that library must use the same public definition.
+  // separately compiled host diagnostic may use scale 2 for a half grid or
+  // scale 1 for a native pixel grid. Every consumer of that library must use
+  // the same public definition; neither changes the default/Vita scale.
 #if defined(PS2VITA_GS_RASTER_SCALE)
   static constexpr int kRasterScale = PS2VITA_GS_RASTER_SCALE;
 #else
   static constexpr int kRasterScale = 4;
 #endif
-  static_assert(kRasterScale == 1 || kRasterScale == 4,
-                "GS diagnostic raster scale must be 1 or 4");
+  static_assert(kRasterScale == 1 || kRasterScale == 2 || kRasterScale == 4,
+                "GS diagnostic raster scale must be 1, 2 or 4");
   static constexpr int kWidth = 640 / kRasterScale;
   static constexpr int kHeight = 448 / kRasterScale;
 

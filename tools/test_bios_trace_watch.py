@@ -124,7 +124,8 @@ class BiosTraceWatchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         steps = re.findall(r"^gs_frame_step step=(\d+) ee_cycle=(\d+) "
                            r"next_ee_pc=(\w+) scope=active-draw-target-not-scanout "
-                           r"FRAME=(\w+) PMODE=(\w+) DISPFB1=(\w+) DISPFB2=(\w+)",
+                           r"FRAME=(\w+) PMODE=(\w+) DISPFB1=(\w+) DISPFB2=(\w+) "
+                           r"SMODE1=(\w+) SMODE2=(\w+) DISPLAY1=(\w+) DISPLAY2=(\w+)",
                            result.stdout, re.MULTILINE)
         self.assertEqual([(int(step), int(cycle), pc) for step, cycle, pc, *_ in steps],
                          [(1, 1, "BFC00004"), (3, 3, "BFC0000C"),
@@ -136,6 +137,10 @@ class BiosTraceWatchTests(unittest.TestCase):
             r"^gs_frame_step_display step=(\d+) skipped=pmode-not-single-circuit "
             r"PMODE=0000000000000000 scope=logical-linear-not-scanout$",
             result.stdout, re.MULTILINE), ["1", "3", "8"])
+        self.assertNotIn("gs_frame_step_source ", result.stdout)
+        for *_, smode1, smode2, display1, display2 in steps:
+            self.assertEqual((smode1, smode2, display1, display2),
+                             ("0000000000000000",) * 4)
         self.assertEqual(list(self.directory.glob("valid-steps*.linear-display.ppm")), [])
         expected_ppm = b"P6\n160 112\n255\n" + bytes(160 * 112 * 3)
         self.assertEqual(framebuffer.read_bytes(), expected_ppm)
@@ -165,16 +170,37 @@ class BiosTraceWatchTests(unittest.TestCase):
         self.assertFalse(Path(str(framebuffer) + ".step-8.ppm").exists())
 
     @staticmethod
-    def display_register_program(pmode, dispfb, circuit):
+    def display_register_program(pmode, dispfb, circuit, *, smode1=None,
+                                 smode2=None, display=None, other_display=None,
+                                 other_dispfb=None):
         # Owned EE instructions: LUI t0,0x1200; then LUI/ORI t1,value and
-        # SW t1,offset(t0) for the privileged PMODE and selected DISPFB halves.
+        # SW t1,offset(t0). The original three writes remain first, preserving
+        # old ten-instruction fixtures. Each optional register writes both
+        # little-endian 32-bit halves of its full 64-bit value.
         words = [0x3C081200]
         offset = 0x70 if circuit == 1 else 0x90
-        for address, value in ((0, pmode), (offset, dispfb & 0xFFFFFFFF),
-                               (offset + 4, dispfb >> 32)):
+        writes = [(0, pmode), (offset, dispfb & 0xFFFFFFFF),
+                  (offset + 4, dispfb >> 32)]
+        for address, value in ((0x10, smode1), (0x20, smode2),
+                               (offset + 0x10, display),
+                               (0xA0 if circuit == 1 else 0x80, other_display),
+                               (0x90 if circuit == 1 else 0x70, other_dispfb)):
+            if value is not None:
+                writes.extend(((address, value & 0xFFFFFFFF),
+                               (address + 4, value >> 32)))
+        for address, value in writes:
             words.extend((0x3C090000 | ((value >> 16) & 0xFFFF),
                           0x35290000 | (value & 0xFFFF), 0xAD090000 | address))
         return words
+
+    def assert_source_metadata(self, result, step, circuit, smode1, smode2,
+                               display, width, height, status="ready"):
+        line = (f"gs_frame_step_source step={step} circuit={circuit} "
+                f"SMODE1={smode1:016X} SMODE2={smode2:016X} "
+                f"DISPLAY={display:016X} width={width} height={height} "
+                f"status={status} scope=requested-source-extent-not-scanout")
+        self.assertRegex(result.stdout, re.compile("^" + re.escape(line) + "$",
+                                                   re.MULTILINE))
 
     def test_supported_single_display_circuit_captures_decoded_offsets(self):
         for circuit, psm in ((1, 0), (2, 1)):
@@ -191,6 +217,7 @@ class BiosTraceWatchTests(unittest.TestCase):
                               f"DISPFB={fb:016X} base=00006000 width=64 dbx=5 dby=7",
                               result.stdout)
                 self.assertNotIn("gs_frame_step_display step=10 skipped=", result.stdout)
+                self.assert_source_metadata(result, 10, circuit, 0, 0, 0, 1, 1)
                 display_path = Path(str(framebuffer) +
                                     ".step-10.ppm.linear-display.ppm")
                 expected = b"P6\n160 112\n255\n" + bytes(160 * 112 * 3)
@@ -212,6 +239,133 @@ class BiosTraceWatchTests(unittest.TestCase):
                 self.assertTrue(Path(str(framebuffer) + ".step-10.ppm").is_file())
                 self.assertFalse(Path(str(framebuffer) +
                                       ".step-10.ppm.linear-display.ppm").exists())
+                self.assertNotIn("gs_frame_step_source ", result.stdout)
+
+    def test_source_metadata_selects_only_the_enabled_circuit_and_full_registers(self):
+        # Reserved bits and DX/DY must survive the raw metadata but must not
+        # alter the requested source dimensions. This NTSC INT+FFMD window is
+        # 2560 / 4 columns and ceil(512 / 2) stored rows.
+        display = ((0x1FF << 55) | (0x7 << 29) | (511 << 44) |
+                   (2559 << 32) | (3 << 23) | (321 << 12) | 123)
+        other_display = (0x155 << 55) | (15 << 23)
+        smode1 = (0xA5A5A5A5 << 32) | (2 << 13) | 0x123
+        smode2 = (0x5A5A5A5A << 32) | 0x12340003
+        fb = 3 | (10 << 9) | (5 << 32) | (7 << 43)
+        other_fb = 0xF000000000000000 | (63 << 9) | (31 << 15)
+        expected = b"P6\n160 112\n255\n" + bytes(160 * 112 * 3)
+        for circuit in (1, 2):
+            with self.subTest(circuit=circuit):
+                framebuffer = self.directory / f"source-circuit-{circuit}.ppm"
+                program = self.display_register_program(
+                    1 << (circuit - 1), fb, circuit, smode1=smode1,
+                    smode2=smode2, display=display, other_display=other_display,
+                    other_dispfb=other_fb)
+                step = len(program)
+                result = self.run_trace({"ASTRA_GS_FRAME_STEPS": str(step)},
+                                        max_steps=step, framebuffer=framebuffer,
+                                        words=program)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assert_source_metadata(result, step, circuit, smode1, smode2,
+                                            display, 640, 256)
+                display1, display2 = ((display, other_display) if circuit == 1
+                                      else (other_display, display))
+                fb1, fb2 = ((fb, other_fb) if circuit == 1 else (other_fb, fb))
+                self.assertIn(f"DISPFB1={fb1:016X} DISPFB2={fb2:016X} "
+                              f"SMODE1={smode1:016X} SMODE2={smode2:016X} "
+                              f"DISPLAY1={display1:016X} DISPLAY2={display2:016X}",
+                              result.stdout)
+                self.assertIn(f"step={step} ee_cycle={step} "
+                              f"next_ee_pc={0xBFC00000 + 4 * step:08X} ",
+                              result.stdout)
+                # Geometry is metadata only in this tool: the older fixed-size
+                # draw and logical-display PPM bytes and names remain intact.
+                for path in (framebuffer, Path(str(framebuffer) + f".step-{step}.ppm"),
+                             Path(str(framebuffer) +
+                                  f".step-{step}.ppm.linear-display.ppm")):
+                    self.assertEqual(path.read_bytes(), expected)
+                self.assertEqual(len(list(self.directory.glob(
+                    f"source-circuit-{circuit}.ppm.step-*"))), 2)
+
+    def test_source_register_snapshot_observes_completed_low_and_high_stores(self):
+        display = (511 << 44) | (2559 << 32) | (3 << 23) | 77
+        smode1, smode2 = 2 << 13, 3
+        program = self.display_register_program(1, 10 << 9, 1,
+                                                smode1=smode1, smode2=smode2,
+                                                display=display)
+        # 10 original instructions, then 6 per SMODE register. DISPLAY's low
+        # SW completes at step 25; its high SW completes at step 28.
+        self.assertEqual(len(program), 28)
+        framebuffer = self.directory / "source-store-boundary.ppm"
+        result = self.run_trace({"ASTRA_GS_FRAME_STEPS": "25,28"}, max_steps=28,
+                                framebuffer=framebuffer, words=program)
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assert_source_metadata(result, 25, 1, smode1, smode2,
+                                    display & 0xFFFFFFFF, 0, 1, "empty-extent")
+        self.assert_source_metadata(result, 28, 1, smode1, smode2, display, 640, 256)
+        for step in (25, 28):
+            self.assertIn(f"step={step} ee_cycle={step} "
+                          f"next_ee_pc={0xBFC00000 + 4 * step:08X} ", result.stdout)
+        self.assertIn("gs_frame_steps captured=2 requested=2", result.stdout)
+
+    def test_source_geometry_modes_rounding_empty_extents_and_precedence(self):
+        # Explicit expected dimensions avoid importing the implementation as
+        # the oracle. A 21 / 4 horizontal extent floors to 5; 7 / 2 rows floor
+        # to 3, then analogue INT+FFMD storage rounds odd heights up to 2.
+        odd_display = (6 << 44) | (20 << 32) | (1 << 27) | (3 << 23)
+        cases = (
+            ("progressive", odd_display, 0, 0, 5, 3, "ready"),
+            ("progressive-ffmd", odd_display, 0, 2, 5, 3, "ready"),
+            ("ntsc-field", odd_display, 2 << 13, 1, 5, 3, "ready"),
+            ("ntsc-frame", odd_display, 2 << 13, 3, 5, 2, "ready"),
+            ("pal-frame", odd_display, 3 << 13, 3, 5, 2, "ready"),
+            ("unsupported-cmod0", odd_display, 0, 1, 5, 3, "unsupported-mode"),
+            ("unsupported-cmod1", odd_display, 1 << 13, 3, 5, 3, "unsupported-mode"),
+            ("empty-width", 15 << 23, 0, 0, 0, 1, "empty-extent"),
+            ("empty-height", 3 << 27, 0, 0, 1, 0, "empty-extent"),
+            ("both-empty", (15 << 23) | (3 << 27), 2 << 13, 3,
+             0, 0, "empty-extent"),
+            ("mode-before-empty", (15 << 23) | (3 << 27), 0, 3,
+             0, 0, "unsupported-mode"),
+            ("maximum-fields", (4095 << 32) | (2047 << 44), 0, 0,
+             4096, 2048, "ready"),
+        )
+        for name, display, smode1, smode2, width, height, status in cases:
+            with self.subTest(name=name):
+                framebuffer = self.directory / f"source-{name}.ppm"
+                program = self.display_register_program(2, 10 << 9, 2,
+                                                        smode1=smode1,
+                                                        smode2=smode2,
+                                                        display=display)
+                step = len(program)
+                result = self.run_trace({"ASTRA_GS_FRAME_STEPS": str(step)},
+                                        max_steps=step, framebuffer=framebuffer,
+                                        words=program)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assert_source_metadata(result, step, 2, smode1, smode2,
+                                            display, width, height, status)
+                # Unsupported/empty source geometry does not suppress the
+                # existing independent fixed-region diagnostic export.
+                self.assertTrue(Path(str(framebuffer) +
+                                     f".step-{step}.ppm.linear-display.ppm").exists())
+
+    def test_source_metadata_is_not_emitted_for_bad_framebuffer_or_pmode(self):
+        for index, (pmode, fb) in enumerate(((0, 10 << 9), (3, 10 << 9),
+                                           (1, 0), (1, (10 << 9) | (2 << 15)))):
+            with self.subTest(pmode=pmode, fb=fb):
+                program = self.display_register_program(pmode, fb, 1,
+                                                        smode1=0, smode2=3,
+                                                        display=15 << 23)
+                step = len(program)
+                framebuffer = self.directory / f"source-disabled-{index}.ppm"
+                result = self.run_trace({"ASTRA_GS_FRAME_STEPS": str(step)},
+                                        max_steps=step, framebuffer=framebuffer,
+                                        words=program)
+                self.assertEqual(result.returncode, 1, result.stderr)
+                self.assertNotIn("gs_frame_step_source ", result.stdout)
+                reason = ("pmode-not-single-circuit" if pmode in (0, 3)
+                          else "unsupported-display-format")
+                self.assertIn(f"gs_frame_step_display step={step} skipped={reason}",
+                              result.stdout)
 
 
 if __name__ == "__main__":
