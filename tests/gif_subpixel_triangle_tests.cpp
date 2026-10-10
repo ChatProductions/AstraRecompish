@@ -338,9 +338,12 @@ void run_case(const Case& item) {
       }
       const auto actual = result.pixels[static_cast<std::size_t>(y * kGrid + x)];
       pixels_match &= actual == final.color;
-      coverage_match &= (actual != 0u) == final.covered;
+      // Zero RGBA is still an accepted color write. Its coverage is not
+      // visible in a zero-cleared buffer; exact watch events check those
+      // operations separately below.
+      coverage_match &= (actual != 0u) == (final.covered && final.color != 0u);
     }
-  check(coverage_match, item.name, "entire bounded sample grid matches independent 12.4 half-planes");
+  check(coverage_match, item.name, "entire bounded sample grid matches oracle color-visible coverage");
   check(pixels_match, item.name, "covered pixels retain fixed-position Gouraud/FST/STQ interpolation");
 
   std::size_t expected_nondegenerate = 0u;
@@ -460,6 +463,147 @@ void large_depth_cases() {
   run_case(item); run_case(reversed(item, "large varying depth reversed"));
 }
 
+struct Attributes {
+  const char* name;
+  std::array<std::uint32_t, 3> color, z;
+};
+
+std::array<Attributes, 11> attribute_patterns() {
+  constexpr auto maximum = std::numeric_limits<std::uint32_t>::max();
+  return {{{"constant zero Z varying RGBA", {{0x00402010u, 0x80706080u, 0xFFE0C0FFu}},
+            {{0u, 0u, 0u}}},
+           {"constant maximum Z varying RGBA", {{0x00402010u, 0x80706080u, 0xFFE0C0FFu}},
+            {{maximum, maximum, maximum}}},
+           {"varying full-range Z constant RGBA", {{kSolid, kSolid, kSolid}},
+            {{0u, maximum, maximum - 1u}}},
+           {"both attributes constant zero", {{0u, 0u, 0u}}, {{0u, 0u, 0u}}},
+           {"both attributes constant maximum", {{maximum, maximum, maximum}},
+            {{maximum, maximum, maximum}}},
+           {"both attributes constant ordinary", {{kSolid, kSolid, kSolid}}, {{123u, 123u, 123u}}},
+           {"only red channel varies", {{0x80654300u, 0x806543FFu, 0x80654301u}},
+            {{77u, 77u, 77u}}},
+           {"only green channel varies", {{0x80650021u, 0x8065FF21u, 0x80650121u}},
+            {{0u, maximum, 123u}}},
+           {"only blue channel varies", {{0x80004321u, 0x80FF4321u, 0x80014321u}},
+            {{maximum, maximum, maximum}}},
+           {"only alpha channel varies", {{0x00654321u, 0xFF654321u, 0x01654321u}},
+            {{0u, maximum, 1u}}},
+           {"varying full-range Z and RGBA", {{0u, maximum, 0x0180FE7Fu}},
+            {{maximum, 0u, maximum / 2u}}}}};
+}
+
+Triangle attribute_triangle(const Attributes& attributes) {
+  Triangle triangle{{{4, 4}, {4, 508}, {508, 4}}};
+  for (unsigned i = 0u; i < triangle.size(); ++i) {
+    triangle[i].color = attributes.color[i]; triangle[i].z = attributes.z[i];
+    triangle[i].u = .5f + 2.0f * i; triangle[i].v = 4.5f - 2.0f * i;
+    triangle[i].q = i == 1u ? 2.0f : 1.0f;
+  }
+  return triangle;
+}
+
+void attribute_guard_cases() {
+  const auto patterns = attribute_patterns();
+  for (const auto& attributes : patterns) {
+    Case item{attributes.name, {attribute_triangle(attributes)}, true};
+    run_case(item);
+    run_case(reversed(item, attributes.name));
+  }
+  Case successive{"successive constant/varying attribute guard transitions", {}, true};
+  for (const auto& attributes : patterns)
+    successive.triangles.push_back(attribute_triangle(attributes));
+  for (const auto texture : {Texture::None, Texture::Uv, Texture::Stq}) {
+    successive.texture = texture;
+    run_case(successive); run_case(reversed(successive, successive.name));
+  }
+  successive.texture = Texture::None;
+  const auto off = run(successive, false, true), on = run(successive, true, true);
+  check(off.pixels == on.pixels && off.vram_hash == on.vram_hash && off.events.empty(),
+        successive.name, "observation preserves the guard-transition raster and complete VRAM hash");
+  check(!on.events.empty(), successive.name,
+        "guard transitions produce accepted watch operations even for zero color");
+}
+
+template<class T>
+void direct_fixed_position(T& vertex, int x, int y) {
+  if constexpr (HasFixedXy<T>::value) {
+    vertex.fixed_xy = true; vertex.fixed_x = x; vertex.fixed_y = y;
+  }
+}
+
+std::uint64_t word_hash(const std::vector<std::uint32_t>& words) {
+  std::uint64_t value = 1469598103934665603ull;
+  for (const auto word : words) { value ^= word; value *= 1099511628211ull; }
+  return value;
+}
+
+void standalone_attribute_guards() {
+  const auto patterns = attribute_patterns();
+  for (const bool fixed : {false, true})
+    for (const bool reverse : {false, true}) {
+      std::vector<std::uint64_t> unsampled_hashes;
+      // Each Gs instance sees all transitions without clear/reset between
+      // draws. Identity callbacks isolate incoming interpolated vertex RGBA
+      // from texture lookup and preserve it, including the alpha channel.
+      for (unsigned mode = 0u; mode < 3u; ++mode) {
+        ps2vita::Gs gs;
+        gs.set_depth_state(ps2vita::Gs::DepthTest::Always, false);
+        gs.set_scissor(0, 0, 8, 8);
+        std::vector<std::uint32_t> expected_pixels(81u, 0u);
+        for (std::size_t draw = 0u; draw < patterns.size(); ++draw) {
+          const auto& attributes = patterns[draw];
+          std::array<ps2vita::GsVertex, 3> vertices{{{0, 0}, {0, 8}, {8, 0}}};
+          Triangle expected_triangle;
+          for (unsigned i = 0u; i < vertices.size(); ++i) {
+            auto& vertex = vertices[i];
+            vertex.color = attributes.color[i]; vertex.z = attributes.z[i];
+            vertex.uv = 32u | (48ull << 16u); // Constant U2/V3.
+            vertex.q = bits(1.0f);
+            const int x = vertex.x * kStep + (fixed ? 4 : 0);
+            const int y = vertex.y * kStep + (fixed ? 4 : 0);
+            if (fixed) direct_fixed_position(vertex, x, y);
+            expected_triangle[i] = {x, y, vertex.color, vertex.z};
+          }
+          if (reverse) { std::swap(vertices[1], vertices[2]);
+                         std::swap(expected_triangle[1], expected_triangle[2]); }
+          Case item{attributes.name, {expected_triangle}, true};
+          item.right = item.bottom = 8u * kScale;
+          std::vector<std::uint32_t> expected_samples, sampled_colors;
+          for (int y = 0; y < 9; ++y)
+            for (int x = 0; x < 9; ++x) {
+              const auto sample = oracle(item, expected_triangle, x * kScale, y * kScale);
+              if (sample.covered) {
+                expected_pixels[static_cast<std::size_t>(y * 9 + x)] = sample.color;
+                expected_samples.push_back(sample.vertex_color);
+              }
+            }
+          bool coordinates_match = true;
+          const auto sampler = [&](std::int64_t u, std::int64_t v, std::uint32_t color) {
+            coordinates_match &= u == (mode == 2u ? 2ll * 65536 : 2ll) &&
+                                 v == (mode == 2u ? 3ll * 65536 : 3ll);
+            sampled_colors.push_back(color);
+            return color;
+          };
+          if (mode == 0u) gs.triangle(vertices[0], vertices[1], vertices[2]);
+          else if (mode == 1u) gs.triangle(vertices[0], vertices[1], vertices[2], sampler);
+          else gs.triangle(vertices[0], vertices[1], vertices[2], {}, 0u, 0u, sampler);
+          std::vector<std::uint32_t> pixels;
+          for (int y = 0; y < 9; ++y)
+            for (int x = 0; x < 9; ++x) pixels.push_back(gs.pixel(x, y));
+          const auto hash = word_hash(pixels);
+          check(pixels == expected_pixels && hash == word_hash(expected_pixels), item.name,
+                "legacy/fixed successive draws match independent per-channel affine colors and hash");
+          check(coordinates_match && (mode == 0u ? sampled_colors.empty() :
+                                      sampled_colors == expected_samples), item.name,
+                "nearest/fixed identity callbacks receive exact ordered vertex RGBA including alpha");
+          if (mode == 0u) unsampled_hashes.push_back(hash);
+          else check(hash == unsampled_hashes[draw], item.name,
+                     "identity sampler preserves the unsampled per-draw raster hash");
+        }
+      }
+    }
+}
+
 void observer_and_legacy_controls() {
   const Case item{"fractional observer neutrality", {{{{7, 13}, {23, 245}, {237, 29}}}}};
   const auto off = run(item, false, true), on = run(item, true, true);
@@ -496,6 +640,7 @@ void observer_and_legacy_controls() {
 
 int main() {
   geometry_cases(); interpolation_cases(); large_depth_cases(); observer_and_legacy_controls();
+  attribute_guard_cases(); standalone_attribute_guards();
   std::printf("GIF subpixel triangle tests: %u checks, %u failures; fixed_xy=%u scale=%d\n",
               checks, failures, unsigned(HasFixedXy<ps2vita::GsVertex>::value), kScale);
   return failures == 0u ? 0 : 1;

@@ -1,4 +1,5 @@
 #include "ps2vita/gif.hpp"
+#include "ps2vita/gs_integer_math.hpp"
 
 #include <algorithm>
 #include <array>
@@ -542,6 +543,139 @@ void exact_rounding_cases() {
   run_case(sequential);
 }
 
+void exhaustive_byte_math() {
+  bool lerp_matches = true, lerp_bounds = true, blend_matches = true;
+  // Independent positive weighted-sum identity: numerator cannot be negative.
+  // Exhaust all 256*256*16 endpoint/fraction combinations, not just products.
+  for (int a = 0; a < 256; ++a)
+    for (int b = 0; b < 256; ++b)
+      for (unsigned fraction = 0; fraction < 16u; ++fraction) {
+        const auto expected = (a * static_cast<int>(16u - fraction) +
+                               b * static_cast<int>(fraction)) / 16;
+        const auto actual = ps2vita::gs_detail::lerp_byte_4bit(a, b, fraction);
+        lerp_matches &= actual == expected;
+        lerp_bounds &= actual >= 0 && actual <= 255;
+      }
+  // Independent signed quotient/remainder definition covers every integer
+  // in the blend-product interval, including values no byte product reaches.
+  for (int product = -65025; product <= 65025; ++product) {
+    const auto expected = product / 128 - (product % 128 < 0 ? 1 : 0);
+    blend_matches &= ps2vita::gs_detail::floor_blend_product_7bit(product) == expected;
+  }
+  check(lerp_matches, "exhaustive byte interpolation",
+        "all 1,048,576 endpoint/fraction combinations match positive affine division");
+  check(lerp_bounds, "exhaustive byte interpolation",
+        "horizontal results remain valid byte endpoints for vertical interpolation");
+  check(blend_matches, "exhaustive signed blend rounding",
+        "all 130,051 bounded products match floor from signed quotient/remainder");
+}
+
+void wrapped_target_mask_transitions() {
+  constexpr auto name = "wrapped target masked/unmasked transitions";
+  constexpr std::uint32_t bytes = 4u * 1024u * 1024u;
+  constexpr unsigned scale = ps2vita::Gs::kRasterScale;
+  constexpr unsigned pitch = 63u * 64u;
+  constexpr std::uint32_t base = 0x1FFu * 8192u;
+  constexpr int host_y = scale == 1u ? 1 : 0;
+  constexpr std::uint64_t binding = 0x1FFu | (63ull << 16u);
+  std::vector<std::uint8_t> expected(bytes);
+  for (std::size_t i = 0u; i < expected.size(); ++i)
+    expected[i] = static_cast<std::uint8_t>(i * 29u + i / 257u + 7u);
+  // Use independent uint64/modulo addressing, not a call into the private
+  // target helper. At scale 4, only row 0 lies below the VRAM end; scale 1's
+  // chosen native row 1 is already wrapped to byte 0x1F00.
+  std::vector<std::uint32_t> addresses;
+  for (unsigned dy = 0u; dy < scale; ++dy)
+    for (unsigned dx = 0u; dx < scale; ++dx)
+      addresses.push_back(static_cast<std::uint32_t>((std::uint64_t{base} +
+          (std::uint64_t{static_cast<unsigned>(host_y) * scale + dy} * pitch + dx) * 4u) % bytes));
+  check(addresses.size() == scale * scale &&
+            addresses.front() == (scale == 1u ? 0x1F00u : base) &&
+            (scale == 1u || addresses[scale] == 0x1F00u), name,
+        "owned tile crosses VRAM end at quarter scale or starts wrapped at native scale");
+  const auto load = [&](const std::vector<std::uint8_t>& memory, std::uint32_t at) {
+    std::uint32_t value = 0u;
+    for (unsigned byte = 0u; byte < 4u; ++byte)
+      value |= std::uint32_t{memory[(std::uint64_t{at} + byte) % bytes]} << (8u * byte);
+    return value;
+  };
+  const auto store = [&](std::vector<std::uint8_t>& memory, std::uint32_t at,
+                         std::uint32_t value) {
+    for (unsigned byte = 0u; byte < 4u; ++byte)
+      memory[(std::uint64_t{at} + byte) % bytes] = static_cast<std::uint8_t>(value >> (8u * byte));
+  };
+  for (std::size_t i = 0u; i < addresses.size(); ++i) {
+    const auto index = static_cast<unsigned>(i);
+    store(expected, addresses[i], ((17u + 13u * index) << 24u) |
+        ((48u + 9u * index) << 16u) | ((64u + 7u * index) << 8u) | (80u + 11u * index));
+  }
+  auto off_memory = expected, on_memory = expected;
+  ps2vita::Gs off, on;
+  off.set_depth_state(ps2vita::Gs::DepthTest::Always, false);
+  on.set_depth_state(ps2vita::Gs::DepthTest::Always, false);
+  std::vector<ps2vita::GsPixelWrite> events;
+  check(on.set_pixel_watch(addresses, [&](const ps2vita::GsPixelWrite& event) {
+    events.push_back(event);
+  }), name, "each tile word has an aligned physical watch");
+  struct Operation {
+    std::uint64_t frame;
+    std::uint32_t mask, color, z;
+  };
+  const std::array<Operation, 4> operations{{
+      {binding | (0xFF0F00F0ull << 32u), 0xFF0F00F0u, 0xE6B7C8D9u, 0u},
+      {binding, 0u, 0x279ABCEDu, std::numeric_limits<std::uint32_t>::max()},
+      {binding | (1ull << 24u), 0xFF000000u, 0xF0012345u, 0x12345678u},
+      {binding | (0xFFFFFFFFull << 32u), 0xFFFFFFFFu, 0xFEDCBA98u, 42u}}};
+  for (unsigned step = 0u; step < operations.size(); ++step) {
+    const auto& operation = operations[step];
+    if (step == 2u) {
+      // Restore distinct destination alpha after the unmasked overwrite so
+      // PSMCT24 must preserve EACH word, not a cached tile-origin alpha.
+      // These owned backing-memory seeds are not raster operations/events.
+      for (std::size_t i = 0u; i < addresses.size(); ++i) {
+        const auto value = ((33u + 11u * static_cast<unsigned>(i)) << 24u) | 0x00987654u;
+        store(expected, addresses[i], value);
+        store(off_memory, addresses[i], value); store(on_memory, addresses[i], value);
+      }
+    }
+    std::vector<std::uint32_t> before, after;
+    for (const auto address : addresses) {
+      const auto old = load(expected, address);
+      // Bit-mask selection expressed independently as conditional bit flips.
+      const auto value = old ^ ((old ^ operation.color) & ~operation.mask);
+      before.push_back(old); after.push_back(value);
+      store(expected, address, value);
+    }
+    off.set_color_target(&off_memory, operation.frame);
+    on.set_color_target(&on_memory, operation.frame);
+    on.set_draw_trace({ps2vita::GsTracePrimitive::Point, step, 100u + step,
+                       0u, operation.frame});
+    events.clear();
+    off.point({0, host_y, operation.z, operation.color});
+    on.point({0, host_y, operation.z, operation.color});
+    check(off_memory == expected && on_memory == expected, name,
+          "every tile byte matches owned mask selection and every unused byte is unchanged");
+    check(off_memory == on_memory, name,
+          "watch off/on leaves all four MiB identical at each mask transition");
+    const auto index = static_cast<std::size_t>(host_y * ps2vita::Gs::kWidth);
+    check(off.pixel(0, host_y) == after.front() && on.pixel(0, host_y) == after.front() &&
+              off.pixels()[index] == after.front() && on.pixels()[index] == after.front(), name,
+          "active target pixel and refreshed preview retain the exact origin word");
+    check(events.size() == addresses.size(), name,
+          "accepted unmasked, partial, PSMCT24 and fully masked operations all notify every watch");
+    for (std::size_t i = 0u; i < std::min(events.size(), addresses.size()); ++i) {
+      const auto& event = events[i];
+      check(event.address == addresses[i] && event.before == before[i] && event.after == after[i] &&
+                event.input_color == operation.color && event.z == operation.z &&
+                event.x == 0 && event.y == host_y && event.frame == operation.frame &&
+                event.draw.frame == operation.frame && event.draw.sequence == step &&
+                event.draw.packet == 100u + step && event.draw.kind == ps2vita::GsTracePrimitive::Point &&
+                !event.texture.valid, name,
+            "watch metadata keeps each word's old/new value, raw input, depth and exact binding");
+    }
+  }
+}
+
 void observer_and_feedback() {
   const Case item{"observer equality", -.25f, 1.25f};
   const auto off = run(item, false, true), on = run(item, true, true);
@@ -577,6 +711,8 @@ int main() {
   format_and_order_cases();
   perspective_guard_cases();
   exact_rounding_cases();
+  exhaustive_byte_math();
+  wrapped_target_mask_transitions();
   observer_and_feedback();
   std::printf("GIF bilinear tests: %u checks, %u failures; extended_trace=%u scale=%d\n",
               checks, failures, unsigned(HasFilterTrace<ps2vita::GsTextureTrace>::value),

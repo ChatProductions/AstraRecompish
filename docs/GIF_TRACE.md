@@ -125,6 +125,38 @@ RGBA for taps 00,10,01,11. Observers remain read-only and observational. Filteri
 intentionally changes previews and VRAM hashes of existing traces; compare the
 same renderer revision when asserting replay equality.
 
+## Deterministic host graphics throughput
+
+```sh
+# One unreported warmup, then five timed full submit-loop samples.
+build-release/ps2gif_benchmark build-release/cloud.agf 5
+build-release/ps2gif_benchmark_native build-release/cloud.agf 5
+```
+
+`TRACE SAMPLES` requires a strict decimal sample count from 1 to 100. The entire
+bounded container, checksum and footer are validated and preloaded once before
+any warmup or timing. Each trial constructs fresh Gs/Gif instances and resets
+them outside the interval. Only the loop of `Gif::submit` calls is timed with a
+steady host clock: parsing/rasterization and their core allocations are included;
+file I/O, container validation, instance setup, output and hash calculation are
+excluded. No observers, sprite captures or triangle exports are enabled.
+
+After every trial, the complete active-preview and 4 MiB logical-VRAM word
+hashes, final FRAME and draw/transfer counts must match the warmup. Rejected or
+pending GIF data fails explicitly. `matched=1` means repeatability of this
+renderer, not agreement with a reference implementation. Each sample reports
+nanoseconds; the summary reports median/min/max and payload/submission rates.
+Even sample counts use the integer midpoint of the two middle timings. Valid
+zero-record traces are labeled `empty_workload=1` with zero rates.
+
+Compare the same trace, build flags, sample scale and hash baseline before and
+after an optimization. The native executable is a separate host diagnostic,
+not a change to Vita's quarter grid. These numbers are **host graphics-submit
+throughput, not EE/IOP/VU emulation speed, guest frames per second or physical
+Vita FPS**. This trace has no authoritative frame-completion markers. Keep
+firmware-derived workloads local; the automated process tests use only owned
+synthetic streams and assert hashes/contracts, not flaky timing thresholds.
+
 ## Compare a reference draw
 
 Given locally obtained PCSX2 software-renderer context and expanded vertex dumps:

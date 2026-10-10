@@ -129,11 +129,24 @@ public:
   std::uint64_t first_unsupported_tag() const { return first_unsupported_tag_; }
 
 private:
+  // Stack-owned setup for one synchronous draw. Only register decoding is
+  // cached: every sample still reads live local memory before fragment writes.
+  struct TextureSamplerState {
+    std::uint32_t base = 0;
+    unsigned width = 0, format = 0;
+    unsigned u_size = 1, v_size = 1, u_mode = 0, v_mode = 0;
+    unsigned u_minimum = 0, u_maximum = 0, v_minimum = 0, v_maximum = 0;
+    std::uint32_t alpha0 = 0, alpha1 = 0;
+    unsigned texture_function = 0;
+    bool texture_alpha = false, alpha_zero = false, linear = false;
+  };
   void set_prim(std::uint64_t value);
   void write_register(std::uint8_t address, std::uint64_t value);
   void write_image(const std::uint8_t* data, std::size_t size);
-  std::uint32_t sample_texture(unsigned context, std::int64_t raw_u, std::int64_t raw_v,
-                               std::uint32_t vertex_color, bool linear = false) const;
+  TextureSamplerState decode_texture_sampler(unsigned context) const;
+  std::uint32_t sample_texture(const TextureSamplerState& state,
+                               std::int64_t raw_u, std::int64_t raw_v,
+                               std::uint32_t vertex_color) const;
   bool base_level_linear(unsigned context) const;
   void emit_xyz2(std::uint64_t value, bool draw = true);
   void trace_draw(GsTracePrimitive kind, std::uint64_t sequence, unsigned context);

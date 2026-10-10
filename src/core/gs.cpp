@@ -1,4 +1,5 @@
 #include "ps2vita/gs.hpp"
+#include "ps2vita/gs_integer_math.hpp"
 
 #include <algorithm>
 #include <array>
@@ -81,6 +82,21 @@ std::uint32_t Gs::target_read(std::uint32_t address) const {
 
 void Gs::target_write(int x, int y, std::uint32_t color, std::uint32_t mask) {
   if (static_cast<unsigned>(x * kRasterScale) >= color_width_) return;
+  // A bulk unmasked tile operation needs no old destination reads. Measured
+  // beneficial for 4x4 tiles, not the separate one-pixel diagnostic: leave
+  // that build's word route unchanged. Preserve byte-wise VRAM wrapping and
+  // the masked route for FBMSK/PSMCT24/RGB_ONLY preservation.
+  if (kRasterScale > 1 && mask == 0u) {
+    for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
+      for (unsigned dx = 0; dx < static_cast<unsigned>(kRasterScale); ++dx) {
+        const auto address = color_base_ +
+            ((y * static_cast<unsigned>(kRasterScale) + dy) * color_width_ +
+             x * static_cast<unsigned>(kRasterScale) + dx) * 4u;
+        for (unsigned b = 0; b < 4; ++b)
+          (*color_memory_)[(address + b) & 0x3FFFFFu] = color >> (b * 8u);
+      }
+    return;
+  }
   for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
     for (unsigned dx = 0; dx < static_cast<unsigned>(kRasterScale); ++dx) {
       const auto address = color_base_ +
@@ -164,7 +180,7 @@ void Gs::write(int x, int y, std::uint32_t z, std::uint32_t color) {
           const int components[] = {int((source >> shift) & 0xFFu),
                                     int((destination >> shift) & 0xFFu), 0};
           const int product = (components[a] - components[b]) * alpha;
-          const int scaled = product >= 0 ? product / 128 : -((-product + 127) / 128);
+          const int scaled = gs_detail::floor_blend_product_7bit(product);
           const int value = scaled + components[d];
           const auto channel = color_clamp_ ? unsigned(std::clamp(value, 0, 255)) :
               static_cast<unsigned>(value) & 0xFFu;
@@ -231,6 +247,11 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
   // A collapsed triangle has no coverage; it is not a line primitive.
   if (area == 0) return;
   if (area < 0) { std::swap(b, c); std::swap(pb, pc); area = -area; }
+  // Barycentric weights sum exactly to area. Identical corner attributes
+  // need no interpolation/division, even for the wide-area depth path.
+  // Guard each attribute independently; Gouraud gradients keep the old math.
+  const bool constant_z = a.z == b.z && a.z == c.z;
+  const bool constant_color = a.color == b.color && a.color == c.color;
   const auto fp = [](std::uint32_t bits) {
     float value;
     std::memcpy(&value, &bits, sizeof(value));
@@ -276,10 +297,13 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
       if (wa < 0 || wb < 0 || wc < 0) continue;
       if ((wa == 0 && !include_a) || (wb == 0 && !include_b) ||
           (wc == 0 && !include_c)) continue;
-      const auto z = mix_depth(a.z, b.z, c.z, wa, wb, wc, area);
-      std::uint32_t color = 0;
-      for (unsigned shift = 0; shift < 32; shift += 8)
-        color |= mix_channel(a.color, b.color, c.color, wa, wb, wc, area, shift);
+      const auto z = constant_z ? a.z : mix_depth(a.z, b.z, c.z, wa, wb, wc, area);
+      std::uint32_t color = a.color;
+      if (!constant_color) {
+        color = 0;
+        for (unsigned shift = 0; shift < 32; shift += 8)
+          color |= mix_channel(a.color, b.color, c.color, wa, wb, wc, area, shift);
+      }
       if (sample || fixed_sample) {
         // FST UV is unsigned 10.4 fixed point. Interpolate before removing
         // the fractional bits; vertex winding swaps must also swap attributes.

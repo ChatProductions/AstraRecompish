@@ -1,4 +1,5 @@
 #include "ps2vita/gif.hpp"
+#include "ps2vita/gs_integer_math.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -263,14 +264,39 @@ bool Gif::base_level_linear(unsigned context) const {
   return ((tex1 >> 2u) & 7u) == 0u && (tex1 & (1ull << 5u)) != 0u;
 }
 
-std::uint32_t Gif::sample_texture(unsigned context, std::int64_t raw_u, std::int64_t raw_v,
-                                  std::uint32_t vertex_color, bool linear) const {
-  const auto tex0 = tex0_[context & 1u];
-  const auto base = static_cast<std::uint32_t>((tex0 & 0x3FFFu) * 256u);
-  const auto width = static_cast<unsigned>((tex0 >> 14) & 0x3Fu) * 64u;
-  const auto format = static_cast<unsigned>((tex0 >> 20) & 0x3Fu);
+Gif::TextureSamplerState Gif::decode_texture_sampler(unsigned context) const {
+  context &= 1u;
+  const auto tex0 = tex0_[context];
+  const auto clamp = clamp_[context];
+  TextureSamplerState state;
+  state.base = static_cast<std::uint32_t>((tex0 & 0x3FFFu) * 256u);
+  state.width = static_cast<unsigned>((tex0 >> 14) & 0x3Fu) * 64u;
+  state.format = static_cast<unsigned>((tex0 >> 20) & 0x3Fu);
+  state.u_size = 1u << ((tex0 >> 26) & 15u);
+  state.v_size = 1u << ((tex0 >> 30) & 15u);
+  state.u_mode = clamp & 3u;
+  state.v_mode = (clamp >> 2) & 3u;
+  state.u_minimum = (clamp >> 4) & 0x3FFu;
+  state.u_maximum = (clamp >> 14) & 0x3FFu;
+  state.v_minimum = (clamp >> 24) & 0x3FFu;
+  state.v_maximum = (clamp >> 34) & 0x3FFu;
+  state.alpha0 = static_cast<std::uint32_t>(texa_ & 0xFFu);
+  state.alpha1 = static_cast<std::uint32_t>((texa_ >> 32u) & 0xFFu);
+  state.alpha_zero = (texa_ & 0x8000u) != 0u;
+  state.texture_function = static_cast<unsigned>((tex0 >> 35) & 3u);
+  state.texture_alpha = (tex0 & (1ull << 34)) != 0u;
+  state.linear = base_level_linear(context);
+  return state;
+}
+
+std::uint32_t Gif::sample_texture(const TextureSamplerState& state,
+                                  std::int64_t raw_u, std::int64_t raw_v,
+                                  std::uint32_t vertex_color) const {
+  const auto base = state.base;
+  const auto width = state.width;
+  const auto format = state.format;
+  const bool linear = state.linear;
   if (width == 0u) return vertex_color;
-  const auto clamp = clamp_[context & 1u];
   const auto address_coordinate = [](std::int64_t coordinate, unsigned mode,
                                      unsigned size, unsigned minimum, unsigned maximum) -> unsigned {
     switch (mode) {
@@ -289,25 +315,25 @@ std::uint32_t Gif::sample_texture(unsigned context, std::int64_t raw_u, std::int
   };
   const auto read_tap = [&](std::int64_t x, std::int64_t y) {
     Tap tap;
-    tap.u = address_coordinate(x, clamp & 3u, 1u << ((tex0 >> 26) & 15u),
-                              (clamp >> 4) & 0x3FFu, (clamp >> 14) & 0x3FFu);
-    tap.v = address_coordinate(y, (clamp >> 2) & 3u, 1u << ((tex0 >> 30) & 15u),
-                              (clamp >> 24) & 0x3FFu, (clamp >> 34) & 0x3FFu);
+    tap.u = address_coordinate(x, state.u_mode, state.u_size,
+                              state.u_minimum, state.u_maximum);
+    tap.v = address_coordinate(y, state.v_mode, state.v_size,
+                              state.v_minimum, state.v_maximum);
     const auto offset = static_cast<std::uint64_t>(tap.v) * width + tap.u;
     tap.address = (base + static_cast<std::uint32_t>(offset * (format == 2u ? 2u : 4u))) & 0x3FFFFFu;
     if (format <= 1u) {
       tap.expanded = tap.raw = read_local32(tap.address);
       if (format == 1u) {
         tap.expanded &= 0x00FFFFFFu;
-        const auto alpha = (texa_ & 0x8000u) != 0u && tap.expanded == 0u ? 0u : texa_ & 0xFFu;
+        const auto alpha = state.alpha_zero && tap.expanded == 0u ? 0u : state.alpha0;
         tap.expanded |= static_cast<std::uint32_t>(alpha) << 24u;
       }
     } else {
       const auto pixel = static_cast<std::uint16_t>(local_memory_[tap.address] |
           (local_memory_[(tap.address + 1u) & 0x3FFFFFu] << 8u));
       tap.raw = pixel;
-      const auto alpha = (pixel & 0x8000u) != 0u ? (texa_ >> 32u) & 0xFFu :
-          ((texa_ & 0x8000u) != 0u && pixel == 0u ? 0u : texa_ & 0xFFu);
+      const auto alpha = (pixel & 0x8000u) != 0u ? state.alpha1 :
+          (state.alpha_zero && pixel == 0u ? 0u : state.alpha0);
       tap.expanded = ((pixel & 0x1Fu) << 3u) |
           (((pixel >> 5u) & 0x1Fu) << 11u) |
           (((pixel >> 10u) & 0x1Fu) << 19u) |
@@ -339,22 +365,18 @@ std::uint32_t Gif::sample_texture(unsigned context, std::int64_t raw_u, std::int
     taps[1] = read_tap(raw_u + 1, raw_v);
     taps[2] = read_tap(raw_u, raw_v + 1);
     taps[3] = read_tap(raw_u + 1, raw_v + 1);
-    const auto lerp = [](int a, int b, unsigned fraction) {
-      const int product = (b - a) * static_cast<int>(fraction);
-      return a + (product >= 0 ? product / 16 : -((-product + 15) / 16));
-    };
     color = 0;
     for (unsigned shift = 0; shift < 32u; shift += 8u) {
       const auto component = [&](unsigned tap) {
         return static_cast<int>((taps[tap].expanded >> shift) & 0xFFu);
       };
-      const auto top = lerp(component(0), component(1), fraction_u);
-      const auto bottom = lerp(component(2), component(3), fraction_u);
-      color |= static_cast<std::uint32_t>(lerp(top, bottom, fraction_v)) << shift;
+      const auto top = gs_detail::lerp_byte_4bit(component(0), component(1), fraction_u);
+      const auto bottom = gs_detail::lerp_byte_4bit(component(2), component(3), fraction_u);
+      color |= static_cast<std::uint32_t>(gs_detail::lerp_byte_4bit(top, bottom, fraction_v)) << shift;
     }
   }
-  const auto texture_function = static_cast<unsigned>((tex0 >> 35) & 3u);
-  const bool texture_alpha = (tex0 & (1ull << 34)) != 0u;
+  const auto texture_function = state.texture_function;
+  const bool texture_alpha = state.texture_alpha;
   const auto traced = [&](std::uint32_t output) {
     if (gs_.pixel_watch_enabled()) {
       GsTextureTrace trace{true, raw_u, raw_v, taps[0].u, taps[0].v, format,
@@ -553,14 +575,17 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
         first.color = second.color = vertex.color;
       if ((prim_ & 0x10u) != 0u) {
         const bool fixed_uv = (prim_ & 0x100u) != 0u;
-        const bool linear = base_level_linear(context);
+        const auto texture_state = decode_texture_sampler(context);
+        const bool linear = texture_state.linear;
+        // triangle() consumes this callback synchronously. Borrow stack setup
+        // to avoid a large std::function capture/allocation for every draw.
         const Gs::TextureSampler sampler =
-            [this, context, linear](std::int64_t u, std::int64_t v, std::uint32_t color) {
-              return sample_texture(context, u, v, color, linear);
+            [this, &texture_state](std::int64_t u, std::int64_t v, std::uint32_t color) {
+              return sample_texture(texture_state, u, v, color);
             };
         gs_.triangle(first, second, vertex, linear ? Gs::TextureSampler{} : sampler,
-            fixed_uv ? 0u : 1u << ((tex0_[context] >> 26) & 15u),
-            fixed_uv ? 0u : 1u << ((tex0_[context] >> 30) & 15u),
+            fixed_uv ? 0u : texture_state.u_size,
+            fixed_uv ? 0u : texture_state.v_size,
             linear ? sampler : Gs::FixedTextureSampler{});
       } else {
         gs_.triangle(first, second, vertex);
@@ -698,7 +723,8 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
   const auto color = static_cast<std::uint32_t>(rgbaq_);
   const bool textured_uv = (prim_ & (1u << 4)) != 0u &&
                            (prim_ & (1u << 8)) != 0u;
-  const bool linear = textured_uv && base_level_linear(context);
+  const auto texture_state = textured_uv ? decode_texture_sampler(context) : TextureSamplerState{};
+  const bool linear = textured_uv && texture_state.linear;
   const auto u0 = static_cast<int>(first_uv_ & 0x3FFFu);
   const auto v0 = static_cast<int>((first_uv_ >> 16) & 0x3FFFu);
   const auto u1 = static_cast<int>(uv_ & 0x3FFFu);
@@ -716,12 +742,12 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
             std::int64_t{y * kFixedRasterStep - origin_y} * (v1 - v0);
         if (linear) {
           // Convert 10.4 to 16.16 without first discarding the affine fraction.
-          pixel_color = sample_texture(context, u_numerator * 4096 / span_x,
-              v_numerator * 4096 / span_y, color, true);
+          pixel_color = sample_texture(texture_state, u_numerator * 4096 / span_x,
+              v_numerator * 4096 / span_y, color);
         } else {
           const auto u = u_numerator / (std::int64_t{span_x} * 16);
           const auto v = v_numerator / (std::int64_t{span_y} * 16);
-          pixel_color = sample_texture(context, std::max<std::int64_t>(0, u),
+          pixel_color = sample_texture(texture_state, std::max<std::int64_t>(0, u),
               std::max<std::int64_t>(0, v), color);
         }
       }
