@@ -8,6 +8,15 @@ namespace ps2vita {
 namespace {
 
 constexpr int kFixedRasterStep = 16 * Gs::kRasterScale;
+constexpr bool kNativeLittleEndian =
+#if (defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && \
+     __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) || \
+    (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64) || \
+                          defined(_M_ARM) || defined(_M_ARM64)))
+    true;
+#else
+    false;
+#endif
 
 std::uint64_t load64(const std::uint8_t* data) {
   std::uint64_t value = 0;
@@ -217,11 +226,27 @@ bool Gif::submit(const std::uint8_t* data, std::size_t size) {
 }
 
 std::uint32_t Gif::read_local32(std::uint32_t byte_address) const {
+  // Aligned words cannot straddle the 4 MiB wrap boundary: their masked
+  // address is at most 0x3FFFFC. memcpy is alias-safe, keeps live feedback,
+  // and becomes a native word load on known little-endian targets. Unknown
+  // byte order and unaligned/wrapped reads retain the explicit byte route.
+  if constexpr (kNativeLittleEndian)
+    if ((byte_address & 3u) == 0u) return read_aligned_local32(byte_address);
   std::uint32_t value = 0;
   for (unsigned byte = 0; byte < 4u; ++byte)
     value |= static_cast<std::uint32_t>(
         local_memory_[(byte_address + byte) & 0x3FFFFFu]) << (byte * 8u);
   return value;
+}
+
+std::uint32_t Gif::read_aligned_local32(std::uint32_t byte_address) const {
+  if constexpr (kNativeLittleEndian) {
+    std::uint32_t value;
+    std::memcpy(&value, local_memory_.data() + (byte_address & 0x3FFFFFu), sizeof(value));
+    return value;
+  } else {
+    return read_local32(byte_address);
+  }
 }
 
 void Gif::write_image(const std::uint8_t* data, std::size_t size) {
@@ -322,7 +347,9 @@ std::uint32_t Gif::sample_texture(const TextureSamplerState& state,
     const auto offset = static_cast<std::uint64_t>(tap.v) * width + tap.u;
     tap.address = (base + static_cast<std::uint32_t>(offset * (format == 2u ? 2u : 4u))) & 0x3FFFFFu;
     if (format <= 1u) {
-      tap.expanded = tap.raw = read_local32(tap.address);
+      // Base is a multiple of 256 and the pixel offset is a multiple of 4.
+      // PSMCT32/24 therefore satisfy the branch-free word-read contract.
+      tap.expanded = tap.raw = read_aligned_local32(tap.address);
       if (format == 1u) {
         tap.expanded &= 0x00FFFFFFu;
         const auto alpha = state.alpha_zero && tap.expanded == 0u ? 0u : state.alpha0;

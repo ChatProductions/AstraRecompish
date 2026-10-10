@@ -704,6 +704,97 @@ void observer_and_feedback() {
         source.name, "later bilinear sampling reads the rendered logical color target");
 }
 
+void local_word_reads() {
+  constexpr std::uint32_t bytes = 0x400000u;
+  const auto pattern = [](std::uint32_t address) {
+    return static_cast<std::uint8_t>((address * 73u) ^ (address >> 8u) ^
+                                     (address >> 16u) ^ 0xA5u);
+  };
+  const auto expected = [&](std::uint32_t address) {
+    std::uint32_t value = 0u;
+    for (unsigned byte = 0u; byte < 4u; ++byte)
+      value |= std::uint32_t{pattern(static_cast<std::uint32_t>(
+          (std::uint64_t{address} + byte) % bytes))} << (byte * 8u);
+    return value;
+  };
+  ps2vita::Gs gs;
+  ps2vita::Gif gif(gs);
+  Packet packet;
+  packet.ad(8ull << 48u, 0x50u); // 512-wide, 32-bit destination at base zero.
+  packet.ad(0u, 0x51u);
+  packet.ad(512u | (2048ull << 32u), 0x52u);
+  packet.ad(0u, 0x53u);
+  for (std::uint32_t position = 0u; position < bytes;) {
+    const auto qwords = std::min<std::uint32_t>((bytes - position) / 16u, 0x7FFFu);
+    packet.word(0x0800000000008000ull | qwords, 8u);
+    packet.word(0u, 8u);
+    for (std::uint32_t qword = 0u; qword < qwords; ++qword) {
+      for (unsigned half = 0u; half < 2u; ++half) {
+        std::uint64_t value = 0u;
+        for (unsigned byte = 0u; byte < 8u; ++byte)
+          value |= std::uint64_t{pattern(position++)} << (byte * 8u);
+        packet.word(value, 8u);
+      }
+    }
+  }
+  const char* name = "owned full-VRAM byte-read oracle";
+  check(gif.submit(packet.bytes.data(), packet.bytes.size()) &&
+            gif.packets_rejected() == 0u && gif.pending_bytes() == 0u &&
+            gif.image_bytes() == bytes && gif.local_bytes_written() == bytes &&
+            gif.image_tags() == 9u,
+        name, "nine legal IMAGE tags seed all 4 MiB from owned byte data");
+  std::array<bool, 4> matching{{true, true, true, true}};
+  for (std::uint32_t address = 0u; address < bytes; ++address)
+    matching[address & 3u] = matching[address & 3u] &&
+        gif.read_local32(address) == expected(address);
+  for (unsigned alignment = 0u; alignment < matching.size(); ++alignment)
+    check(matching[alignment], name,
+          alignment == 0u ? "every aligned little-endian word matches independent bytes" :
+                           "every unaligned word, including wrap, matches independent bytes");
+  constexpr std::array<std::uint32_t, 14> aliases{{
+      0x00400000u, 0x00400001u, 0x00400002u, 0x00400003u,
+      0x007FFFFCu, 0x007FFFFDu, 0x007FFFFEu, 0x007FFFFFu,
+      0xFFC00000u, 0xFFC01234u, 0xFFFFFFFCu, 0xFFFFFFFDu,
+      0xFFFFFFFEu, 0xFFFFFFFFu}};
+  bool aliases_match = true;
+  for (const auto address : aliases)
+    aliases_match = aliases_match && gif.read_local32(address) == expected(address);
+  check(aliases_match, name,
+        "high-address aliases and uint32 boundary wraps preserve byte semantics");
+
+  // A later IMAGE write must immediately replace live words. It cannot be a
+  // decoded-texel cache. Overwrite the final qword, then cross-wrap reads into
+  // the untouched patterned first bytes and test high-address aliases again.
+  Packet overwrite;
+  overwrite.ad((0x3FFFull << 32u) | (1ull << 48u), 0x50u);
+  overwrite.ad(60ull << 32u, 0x51u);
+  overwrite.ad(4u | (1ull << 32u), 0x52u); overwrite.ad(0u, 0x53u);
+  overwrite.word(0x0800000000008001ull, 8u); overwrite.word(0u, 8u);
+  overwrite.word(0x1716151413121110ull, 8u);
+  overwrite.word(0x1F1E1D1C1B1A1918ull, 8u);
+  check(gif.submit(overwrite.bytes.data(), overwrite.bytes.size()) &&
+            gif.local_bytes_written() == bytes + 16u,
+        name, "subsequent IMAGE changes live final-qword bytes");
+  bool changed_match = true;
+  for (std::uint32_t low = bytes - 20u; low < bytes; ++low) {
+    std::uint32_t value = 0u;
+    for (unsigned byte = 0u; byte < 4u; ++byte) {
+      const auto at = static_cast<std::uint32_t>((std::uint64_t{low} + byte) % bytes);
+      const auto data = at >= bytes - 16u ?
+          static_cast<std::uint8_t>(0x10u + at - (bytes - 16u)) : pattern(at);
+      value |= std::uint32_t{data} << (byte * 8u);
+    }
+    changed_match = changed_match && gif.read_local32(low) == value &&
+        gif.read_local32(low | 0xFFC00000u) == value;
+  }
+  check(changed_match, name, "aligned and wrapped aliases observe the changed bytes immediately");
+  gif.reset();
+  bool reset_zero = true;
+  for (const auto address : aliases) reset_zero = reset_zero && gif.read_local32(address) == 0u;
+  check(reset_zero && gif.local_bytes_written() == 0u, name,
+        "reset clears live source words with no persistent decoded cache");
+}
+
 } // namespace
 
 int main() {
@@ -714,6 +805,7 @@ int main() {
   exhaustive_byte_math();
   wrapped_target_mask_transitions();
   observer_and_feedback();
+  local_word_reads();
   std::printf("GIF bilinear tests: %u checks, %u failures; extended_trace=%u scale=%d\n",
               checks, failures, unsigned(HasFilterTrace<ps2vita::GsTextureTrace>::value),
               ps2vita::Gs::kRasterScale);

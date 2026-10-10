@@ -144,6 +144,8 @@ private:
   void write_register(std::uint8_t address, std::uint64_t value);
   void write_image(const std::uint8_t* data, std::size_t size);
   TextureSamplerState decode_texture_sampler(unsigned context) const;
+  // Internal contract: address is 4-byte aligned, so no word crosses VRAM end.
+  std::uint32_t read_aligned_local32(std::uint32_t byte_address) const;
   std::uint32_t sample_texture(const TextureSamplerState& state,
                                std::int64_t raw_u, std::int64_t raw_v,
                                std::uint32_t vertex_color) const;

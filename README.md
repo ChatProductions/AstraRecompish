@@ -178,6 +178,13 @@ the compiler already performed it. The stronger 195-check per-grid sprite
 fixtures were retained; see the
 [experiment and keep/discard evidence](docs/SESSION_2026-10-10_SPRITE_ROWS.md).
 
+Aligned live texture reads now use alias-safe native word loads, with byte
+fallbacks for unaligned or unknown-endian configurations. An owned oracle
+checks every starting address in the 4 MiB graphics memory, including wrapping
+and later writes. A three-trial native-grid PC pair improves submit throughput
+by about 5%; this is not a Vita FPS measurement. See the
+[word-read evidence and sanitizer gates](docs/SESSION_2026-10-10_TEXTURE_WORD_READS.md).
+
 ### Cloud-background and EE SQRT milestone
 
 A concrete EE floating-point operand bug flattened the cloud brightness table.
