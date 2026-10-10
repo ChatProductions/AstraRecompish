@@ -161,7 +161,8 @@ void triangle_header(std::ostream& output) {
   output << "sequence\tpacket\tee_cycle\tnext_ee_pc\tprim\txyoffset\tscissor\t"
             "test\tzbuf\ttex0\tclamp\tframe\talpha";
   for (unsigned vertex = 0; vertex < 3u; ++vertex)
-    for (const char* field : {"x", "y", "z", "color", "st", "uv", "q", "xyz"})
+    for (const char* field : {"x", "y", "z", "color", "st", "uv", "q", "xyz",
+                             "fixed_xy", "fixed_x", "fixed_y"})
       output << "\tv" << vertex << '_' << field;
   output << '\n';
 }
@@ -185,6 +186,8 @@ void triangle_row(std::ostream& output, const ps2vita::GifTriangleRecord& triang
     hex_word(output, vertex.uv); output << '\t';
     hex_word(output, vertex.q, 8); output << '\t';
     hex_word(output, triangle.xyz[index]);
+    output << '\t' << unsigned(vertex.fixed_xy) << '\t'
+           << vertex.fixed_x << '\t' << vertex.fixed_y;
   }
   output << '\n';
 }

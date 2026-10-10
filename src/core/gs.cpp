@@ -27,6 +27,21 @@ std::uint32_t mix_channel(std::uint32_t ca, std::uint32_t cb, std::uint32_t cc,
   return static_cast<std::uint32_t>(std::clamp<std::int64_t>(value, 0, 255)) << shift;
 }
 
+std::uint32_t mix_depth(std::uint32_t a, std::uint32_t b, std::uint32_t c,
+                       std::uint64_t wa, std::uint64_t wb, std::uint64_t wc,
+                       std::uint64_t area) {
+  if (area <= std::numeric_limits<std::uint32_t>::max())
+    return static_cast<std::uint32_t>((a * wa + b * wb + c * wc) / area);
+  // Different latched XYOFFSETs can make a signed12.4 area exceed 32 bits.
+  // Split Z rather than overflow a 64-bit product or require host __int128.
+  // The weights sum to area; guest fixed bounds make these sums <2^50 and
+  // the reconstructed residual <2^51, including full 32-bit guest Z.
+  const auto high = (a >> 16u) * wa + (b >> 16u) * wb + (c >> 16u) * wc;
+  const auto low = (a & 0xFFFFu) * wa + (b & 0xFFFFu) * wb + (c & 0xFFFFu) * wc;
+  return static_cast<std::uint32_t>((high / area) * 65536u +
+      ((high % area) * 65536u + low) / area);
+}
+
 } // namespace
 
 Gs::Gs() : color_(kWidth * kHeight), depth_(kWidth * kHeight) { clear(0); }
@@ -199,10 +214,23 @@ void Gs::line(GsVertex a, GsVertex b) {
 void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
                   const TextureSampler& sample, unsigned st_width, unsigned st_height,
                   const FixedTextureSampler& fixed_sample) {
-  std::int64_t area = edge(a, b, c.x, c.y);
+  const bool fixed = a.fixed_xy || b.fixed_xy || c.fixed_xy;
+  const int step = fixed ? 16 * kRasterScale : 1;
+  auto pa = a, pb = b, pc = c;
+  if (fixed) {
+    const auto position = [&](GsVertex& point) {
+      const auto x = point.fixed_xy ? std::int64_t{point.fixed_x} : std::int64_t{point.x} * step;
+      const auto y = point.fixed_xy ? std::int64_t{point.fixed_y} : std::int64_t{point.y} * step;
+      if (x < -65535 || x > 65535 || y < -65535 || y > 65535) return false;
+      point.x = static_cast<int>(x); point.y = static_cast<int>(y);
+      return true;
+    };
+    if (!position(pa) || !position(pb) || !position(pc)) return;
+  }
+  std::int64_t area = edge(pa, pb, pc.x, pc.y);
   // A collapsed triangle has no coverage; it is not a line primitive.
   if (area == 0) return;
-  if (area < 0) { std::swap(b, c); area = -area; }
+  if (area < 0) { std::swap(b, c); std::swap(pb, pc); area = -area; }
   const auto fp = [](std::uint32_t bits) {
     float value;
     std::memcpy(&value, &bits, sizeof(value));
@@ -220,24 +248,35 @@ void Gs::triangle(GsVertex a, GsVertex b, GsVertex c,
   const auto inclusive = [](const GsVertex& from, const GsVertex& to) {
     return to.y > from.y || (to.y == from.y && to.x < from.x);
   };
-  const bool include_a = inclusive(b, c), include_b = inclusive(c, a),
-             include_c = inclusive(a, b);
-  const int min_x = std::max(0, std::min({a.x, b.x, c.x}));
-  const int max_x = std::min(kWidth - 1, std::max({a.x, b.x, c.x}));
-  const int min_y = std::max(0, std::min({a.y, b.y, c.y}));
-  const int max_y = std::min(kHeight - 1, std::max({a.y, b.y, c.y}));
+  const bool include_a = inclusive(pb, pc), include_b = inclusive(pc, pa),
+             include_c = inclusive(pa, pb);
+  const auto ceiling = [step](int coordinate) {
+    return coordinate >= 0 ? (std::int64_t{coordinate} + step - 1) / step :
+        std::int64_t{coordinate} / step;
+  };
+  const auto floor = [step](int coordinate) {
+    return coordinate >= 0 ? std::int64_t{coordinate} / step :
+        -((-std::int64_t{coordinate} + step - 1) / step);
+  };
+  const int min_x = static_cast<int>(std::max<std::int64_t>(std::max(0, scissor_left_),
+      ceiling(std::min({pa.x, pb.x, pc.x}))));
+  const int max_x = static_cast<int>(std::min<std::int64_t>(std::min(kWidth - 1, scissor_right_),
+      floor(std::max({pa.x, pb.x, pc.x}))));
+  const int min_y = static_cast<int>(std::max<std::int64_t>(std::max(0, scissor_top_),
+      ceiling(std::min({pa.y, pb.y, pc.y}))));
+  const int max_y = static_cast<int>(std::min<std::int64_t>(std::min(kHeight - 1, scissor_bottom_),
+      floor(std::max({pa.y, pb.y, pc.y}))));
   for (int y = min_y; y <= max_y; ++y) {
     for (int x = min_x; x <= max_x; ++x) {
-      const auto wa = edge(b, c, x, y);
-      const auto wb = edge(c, a, x, y);
-      const auto wc = edge(a, b, x, y);
+      // Non-AA GS samples lie on integer native anchors, not half centers.
+      // Keep all 12.4 vertex fractions until coverage AND interpolation.
+      const auto wa = edge(pb, pc, x * step, y * step);
+      const auto wb = edge(pc, pa, x * step, y * step);
+      const auto wc = edge(pa, pb, x * step, y * step);
       if (wa < 0 || wb < 0 || wc < 0) continue;
       if ((wa == 0 && !include_a) || (wb == 0 && !include_b) ||
           (wc == 0 && !include_c)) continue;
-      const auto z = static_cast<std::uint32_t>((
-          static_cast<std::uint64_t>(a.z) * wa +
-          static_cast<std::uint64_t>(b.z) * wb +
-          static_cast<std::uint64_t>(c.z) * wc) / static_cast<std::uint64_t>(area));
+      const auto z = mix_depth(a.z, b.z, c.z, wa, wb, wc, area);
       std::uint32_t color = 0;
       for (unsigned shift = 0; shift < 32; shift += 8)
         color |= mix_channel(a.color, b.color, c.color, wa, wb, wc, area, shift);

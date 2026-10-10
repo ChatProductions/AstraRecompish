@@ -82,12 +82,17 @@ and has a 640x448 viewport. Its selected linear 640x256 output excludes the
 known adjacent-buffer over-read at this checkpoint. It re-rasterizes guest
 geometry and feedback at full pixel density; it is **not an upscale, sharpening
 filter, native GS swizzled-memory implementation or reconstructed scanout**.
-Integer-vertex truncation, incomplete LOD/filter selection and other GS
+Triangle geometry now preserves signed guest 12.4 positions at integer native
+sample anchors. Point/line geometry still uses the legacy integer projection;
+AA, exact reference interpolation precision, LOD/filter selection and other GS
 approximations remain.
 Different raster grids intentionally have different output/VRAM hashes; compare
 matching versions/grids when checking exact replay reproducibility.
 
-Native triangle TSV X/Y use that build's native pixel grid, while raw XYZ/ST/Q
+Triangle TSV X/Y remain the legacy truncated projection in that build's grid,
+not the fractional positions used by triangle coverage. New `vN_fixed_xy`,
+`vN_fixed_x`, `vN_fixed_y` columns export the actual per-vertex latched signed
+12.4 geometry, including when XYOFFSET changes between kicks. Raw XYZ/ST/Q
 remain unchanged. The current cloud comparator validates quarter-grid X/Y and
 will reject native-grid TSV; use the default executable for that comparison.
 Selected-sprite source probes deliberately remain the documented **160x64 grid
@@ -106,7 +111,8 @@ Linear sampling preserves signed 16.16 coordinates, applies the half-texel
 offset, and uses the upper four fractional bits for separable U-then-V RGBA
 interpolation with floor rounding. Each of the four taps is independently
 addressed; PSMCT24 TEXA/AEM and PSMCT16 expansion occur before filtering, TFX/TCC
-afterward. This does not fix texture swizzling, guest fractional XYZ coverage,
+afterward. The later subpixel checkpoint preserves fractional triangle XYZ,
+but this does not establish all hardware coverage rules or fix texture swizzling,
 the software reference's float stepping/constant-Q prestep, STQ sprites or
 native fixed-point overflow. Existing nearest controls remain covered.
 

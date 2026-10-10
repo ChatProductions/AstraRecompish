@@ -24,8 +24,8 @@ int fixed_coordinate(std::uint64_t xyz, std::uint64_t offset,
 
 int scaled_coordinate(std::uint64_t xyz, std::uint64_t offset,
                       unsigned coordinate_shift, unsigned offset_shift) {
-  // Preserve the existing integer-vertex truncation policy in both builds.
-  // The native diagnostic has more samples, not full GS subpixel coverage.
+  // Legacy trace/point/line projection. Triangles also retain the exact signed
+  // fixed coordinate; their coverage must not use this truncated projection.
   return fixed_coordinate(xyz, offset, coordinate_shift, offset_shift) /
       kFixedRasterStep;
 }
@@ -457,8 +457,8 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
   gs_.set_blend_state((prim_ & (1u << 6)) != 0u, alpha_[context], pabe_, colclamp_);
   gs_.set_alpha_test(test_[context]);
   const auto clip = scissor_[context];
-  gs_.set_scissor(static_cast<int>((clip & 0x7FFu) / Gs::kRasterScale),
-                  static_cast<int>(((clip >> 32) & 0x7FFu) / Gs::kRasterScale),
+  gs_.set_scissor(static_cast<int>(((clip & 0x7FFu) + Gs::kRasterScale - 1u) / Gs::kRasterScale),
+                  static_cast<int>((((clip >> 32) & 0x7FFu) + Gs::kRasterScale - 1u) / Gs::kRasterScale),
                   static_cast<int>(((clip >> 16) & 0x7FFu) / Gs::kRasterScale),
                   static_cast<int>(((clip >> 48) & 0x7FFu) / Gs::kRasterScale));
   if ((clip & 0x7FFu) > ((clip >> 16) & 0x7FFu) ||
@@ -476,7 +476,9 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
         scaled_coordinate(xyz, xyoffset_[context], 16u, 32u),
         static_cast<std::uint32_t>(xyz >> 32),
         static_cast<std::uint32_t>(rgbaq_), st_, uv_,
-        static_cast<std::uint32_t>(rgbaq_ >> 32)};
+        static_cast<std::uint32_t>(rgbaq_ >> 32), true,
+        fixed_coordinate(xyz, xyoffset_[context], 0u, 0u),
+        fixed_coordinate(xyz, xyoffset_[context], 16u, 32u)};
   };
 
   if (primitive == 0u) {
@@ -525,12 +527,12 @@ void Gif::emit_xyz2(std::uint64_t value, bool draw) {
         if (triangle_observer_) triangle_observer_(record);
         if (trace_triangles_ && triangle_records_.size() < 64u)
           triangle_records_.push_back(record);
-        // Host-space area only: this selects useful raster inputs, not proof
-        // of visibility or native GS coverage. Keep the original prefix too.
-        const auto area = std::int64_t{vertices_[1].x - vertices_[0].x} *
-                            (vertex.y - vertices_[0].y) -
-                          std::int64_t{vertices_[1].y - vertices_[0].y} *
-                            (vertex.x - vertices_[0].x);
+        // Preserve genuinely nondegenerate fractional inputs, even if the
+        // legacy trace-grid projection collapses. Still not visibility proof.
+        const auto area = std::int64_t{vertices_[1].fixed_x - vertices_[0].fixed_x} *
+                            (vertex.fixed_y - vertices_[0].fixed_y) -
+                          std::int64_t{vertices_[1].fixed_y - vertices_[0].fixed_y} *
+                            (vertex.fixed_x - vertices_[0].fixed_x);
         if (area != 0) {
           if (trace_triangles_ && nondegenerate_triangle_records_.size() < 64u)
             nondegenerate_triangle_records_.push_back(record);

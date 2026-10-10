@@ -15,6 +15,11 @@ struct GsVertex {
   // Raw guest texture attributes, latched at XYZ kick (no host FP conversion).
   std::uint64_t st = 0, uv = 0;
   std::uint32_t q = 0;
+  // Optional latched XYZ-XYOFFSET in signed GS 12.4 units. Gif triangles use
+  // these for geometry; legacy x/y remain the trace/point/line raster grid.
+  // Each component is in [-65535,65535], the guest 16-bit subtraction range.
+  bool fixed_xy = false;
+  int fixed_x = 0, fixed_y = 0;
 };
 
 enum class GsTracePrimitive { Unknown, Point, Line, Triangle, Sprite };

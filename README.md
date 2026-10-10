@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **39/39 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **41/41 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -140,6 +140,21 @@ correctness. The frozen 800M replay still has readable lettering, unchanged
 input/draw counts and no GIF parser rejection. Mipmap/LOD selection, subpixel
 coverage, native VRAM and scanout remain incomplete. See the
 [filtering rules, regression tests and saved hashes](docs/SESSION_2026-10-10.md#base-level-bilinear-filtering-follow-up).
+
+### Fractional triangle geometry checkpoint
+
+Triangle coverage and interpolation now retain guest 12.4 positions instead of
+snapping every vertex to the raster grid. The captured 300M stream has 85
+nondegenerate triangles that quarter-grid snapping previously collapsed.
+Signed clipping, shared edges, fractional texture coordinates and overflow-safe
+depth interpolation have owned tests on both raster grids.
+
+On the same native sprite-50 source grid, mean RGB error improves again from
+**0.251 to 0.142**, exact RGB samples rise from **7,322 to 7,786**, and black-mask
+disagreements fall from **103 to 88**. These remain local reference checks,
+not verified full-frame equality or continuous boot animation. The same 800M
+guest stream retains readable startup lettering. See the
+[subpixel checkpoint and local video notes](docs/SESSION_2026-10-10_SUBPIXEL.md).
 
 ### Cloud-background and EE SQRT milestone
 

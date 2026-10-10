@@ -1679,9 +1679,10 @@ int main(int argc, char** argv) {
         static_cast<unsigned long long>(t.frame),
         static_cast<unsigned long long>(t.alpha));
     for (const auto& v : t.vertices)
-      std::printf(" vertex=(%d,%d,%u,%08X) st=%016llX uv=%016llX q=%08X",
+      std::printf(" vertex=(%d,%d,%u,%08X) st=%016llX uv=%016llX q=%08X fixed_xy=%u fixed=(%d,%d)",
           v.x, v.y, v.z, v.color, static_cast<unsigned long long>(v.st),
-          static_cast<unsigned long long>(v.uv), v.q);
+          static_cast<unsigned long long>(v.uv), v.q, unsigned(v.fixed_xy),
+          v.fixed_x, v.fixed_y);
     for (const auto xyz : t.xyz)
       std::printf(" xyz=%016llX", static_cast<unsigned long long>(xyz));
     std::putchar('\n');

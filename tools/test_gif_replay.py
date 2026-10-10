@@ -90,6 +90,19 @@ def filter_payloads(tex1, texels, uv):
     return [upload, draws]
 
 
+def fractional_triangle_payload(offsets):
+    # Owned signed GS12.4 positions: (.25,.25),(8.25,.25),(.25,8.25).
+    # Offset changes deliberately happen between XYZ kicks, not whole draws.
+    entries = [(0x4C, 10 << 16), (0x40, 0x07FF000007FF0000),
+               (0x47, 0), (0x46, 1), (0, 0xB)]  # Triangle with IIP.
+    for (x, y), red, z, offset in zip(((4, 4), (132, 4), (4, 132)),
+                                     (64, 128, 192), (7, 8, 9), offsets):
+        entries.extend(((0x18, offset | (offset << 32)),
+                        (1, 0x3F80000080402000 | red),
+                        (5, (x + offset) | ((y + offset) << 16) | (z << 32))))
+    return ad(*entries)
+
+
 def linear_pixel(x, y):
     # A different word at every relevant U/V; retained alpha tests raw hashing
     # independently from the RGB-only PPM, including a PSMCT24 view.
@@ -195,6 +208,62 @@ class GifReplayTests(unittest.TestCase):
             with self.subTest(tex1=f"{tex1:X}"):
                 self.assert_filter_replay(f"descending-{tex1:X}", tex1, texels, uv,
                                           expected)
+
+    def fractional_triangle_replay(self, label, offsets):
+        trace = self.directory / f"fractional-{label}.astgif"
+        image = self.directory / f"fractional-{label}.ppm"
+        table = self.directory / f"fractional-{label}.tsv"
+        trace.write_bytes(serialized_trace([fractional_triangle_payload(offsets)]))
+        result = self.replay("--framebuffer", image, "--triangles", table, trace=trace)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("trace_validated=1", result.stdout)
+        self.assertIn("trace_packets=1", result.stdout)
+        self.assertIn("replay_packets=1", result.stdout)
+        self.assertIn("gif_packets=1 rejected=0 pending=0 sprites=0 points=0 lines=0 "
+                      "triangles=1 exported_triangles=1", result.stdout)
+        text = table.read_text()
+        self.assertTrue(text.endswith("# complete triangles=1 replay_packets=1 trace_packets=1\n"))
+        rows = list(csv.DictReader(io.StringIO("\n".join(
+            line for line in text.splitlines() if not line.startswith("#"))), delimiter="\t"))
+        self.assertEqual(len(rows), 1)
+        return result, image, rows[0]
+
+    def assert_fractional_triangle_framebuffer(self, result, image):
+        # Integer native anchor (4,4) has barycentric weights 1/16,15/32,15/32;
+        # R=64/16+128*15/32+192*15/32=154. Only host (1,1) is inside;
+        # snapped integer vertices instead write three origin-adjacent pixels.
+        expected = [0x8040209A if (x, y) == (1, 1) else 0
+                    for y in range(112) for x in range(160)]
+        self.assertEqual(image.read_bytes(), ppm_words(expected, 160, 112))
+        self.assertIn(f"framebuffer_hash={hash_words(expected)}", result.stdout)
+        self.assertIn("nonzero_rgb_pixels=1/17920", result.stdout)
+
+    def test_serialized_fractional_triangle_preserves_coverage_and_gouraud_prestep(self):
+        result, image, row = self.fractional_triangle_replay("coverage", (0, 0, 0))
+        self.assert_fractional_triangle_framebuffer(result, image)
+        self.assertEqual((row["sequence"], row["packet"], row["prim"]),
+                         ("0", "1", "000000000000000B"))
+
+    def test_serialized_fractional_xyz_latches_each_kick_offset_in_tsv(self):
+        offsets = (64, 80, 96)
+        result, image, row = self.fractional_triangle_replay("latched-offset", offsets)
+        self.assertEqual(row["xyoffset"], "0000006000000060")
+        for index, ((x, y), offset, red, z) in enumerate(zip(
+                ((4, 4), (132, 4), (4, 132)), offsets, (64, 128, 192), (7, 8, 9))):
+            with self.subTest(vertex=index):
+                # get() makes missing new columns an explicit failed assertion,
+                # not a KeyError when checking the preserved old executable.
+                self.assertEqual((row.get(f"v{index}_fixed_xy"),
+                                  row.get(f"v{index}_fixed_x"),
+                                  row.get(f"v{index}_fixed_y")),
+                                 ("1", str(x), str(y)))
+                self.assertEqual((row[f"v{index}_x"], row[f"v{index}_y"]),
+                                 (str(x // 64), str(y // 64)))
+                raw_xyz = (x + offset) | ((y + offset) << 16) | (z << 32)
+                self.assertEqual(row[f"v{index}_xyz"], f"{raw_xyz:016X}")
+                self.assertEqual(row[f"v{index}_color"], f"{0x80402000 | red:08X}")
+                self.assertEqual(row[f"v{index}_q"], "3F800000")
+        self.assert_fractional_triangle_framebuffer(result, image)
 
     def test_complete_replay_and_all_triangle_rows(self):
         image = self.directory / "full.ppm"
