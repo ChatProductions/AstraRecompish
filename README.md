@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **43/43 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **44/44 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -165,6 +165,13 @@ throughput by **27%**, with identical preview and full logical-VRAM hashes.
 This is not full-core speed or measured Vita FPS; the new deterministic
 benchmark keeps those scopes separate. See the
 [measurements, rejected optimization and regression gates](docs/SESSION_2026-10-10_GRAPHICS_THROUGHPUT.md).
+
+The Vita monitor now repeats small scheduler slices within an 8 ms soft compute
+budget instead of limiting execution to 25,000 instructions per refresh.
+Owned tests preserve guest EE/IOP/DMA/graphics state across pacing patterns;
+single-step also uses that scheduler. This removes a frontend request ceiling,
+not a measured hardware bottleneck. See the
+[pacing policy and responsiveness limits](docs/SESSION_2026-10-10_VITA_PACING.md).
 
 ### Cloud-background and EE SQRT milestone
 

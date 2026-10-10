@@ -1,4 +1,5 @@
 #include "ps2vita/emulator.hpp"
+#include "ps2vita/execution_budget.hpp"
 
 #include <algorithm>
 #include <array>
@@ -101,7 +102,8 @@ bool same_ee_architecture(const ps2vita::CpuState& lhs,
       lhs.cycles == rhs.cycles;
 }
 
-Result run_fixture(bool chain, std::uint32_t phase, std::uint32_t slice) {
+Result run_fixture(bool chain, std::uint32_t phase, std::uint32_t slice,
+                   bool paced = false) {
   ps2vita::Emulator emulator;
   const auto elf = make_elf(chain, phase);
   const auto loaded = emulator.load_elf(elf.data(), elf.size());
@@ -121,7 +123,25 @@ Result run_fixture(bool chain, std::uint32_t phase, std::uint32_t slice) {
          emulator.cpu().state().cycles < limit) {
     const auto before = emulator.cpu().state().cycles;
     const auto remaining = limit - static_cast<std::uint32_t>(before);
-    reason = emulator.run_slice(std::min(slice, remaining));
+    if (!paced) {
+      reason = emulator.run_slice(std::min(slice, remaining));
+    } else {
+      std::uint64_t clock = 0u;
+      const auto budget = ps2vita::run_execution_budget({2u, slice, 4u},
+          [&]() { return clock; }, [&](std::uint32_t quantum) {
+            const auto left = limit - static_cast<std::uint32_t>(
+                emulator.cpu().state().cycles);
+            reason = emulator.run_slice(std::min(quantum, left));
+            ++clock;
+            return reason == ps2vita::StopReason::StepLimit &&
+                emulator.cpu().state().cycles < limit;
+          });
+      check(budget.quanta > 0u && budget.quanta <= 2u &&
+                budget.stop == (reason == ps2vita::StopReason::StepLimit ?
+                    ps2vita::ExecutionBudgetStop::Elapsed :
+                    ps2vita::ExecutionBudgetStop::CallbackStopped),
+            chain, phase, slice, "paced ELF obeys its soft budget and stops at guest BREAK");
+    }
     if (emulator.cpu().state().cycles == before) break;
   }
   const auto& cpu = emulator.cpu().state();
@@ -246,6 +266,156 @@ BiosResult run_bios_fixture(bool chain, std::uint32_t phase,
   return {{cpu, memory.read32(kOutput)}, iop};
 }
 
+struct GraphicsSnapshot {
+  ps2vita::CpuState ee{};
+  ps2vita::IopState iop{};
+  std::vector<std::uint32_t> touched_ram, vu_data, vram, preview;
+  std::array<std::uint32_t, 10> hardware{};
+  std::uint32_t iop_counter = 0u;
+  std::uint64_t frame = 0u, vif_packets = 0u, gif_packets = 0u, sprites = 0u;
+};
+
+bool same_snapshot(const GraphicsSnapshot& a, const GraphicsSnapshot& b) {
+  return same_ee_architecture(a.ee, b.ee) && a.iop.gpr == b.iop.gpr &&
+      a.iop.cop0 == b.iop.cop0 && a.iop.hi == b.iop.hi && a.iop.lo == b.iop.lo &&
+      a.iop.pc == b.iop.pc && a.iop.cycles == b.iop.cycles &&
+      a.touched_ram == b.touched_ram && a.vu_data == b.vu_data &&
+      a.vram == b.vram && a.preview == b.preview && a.hardware == b.hardware &&
+      a.iop_counter == b.iop_counter && a.frame == b.frame &&
+      a.vif_packets == b.vif_packets && a.gif_packets == b.gif_packets &&
+      a.sprites == b.sprites;
+}
+
+std::array<GraphicsSnapshot, 2> run_paced_graphics(bool chain,
+    std::uint32_t phase, std::uint32_t quantum) {
+  ps2vita::Emulator emulator;
+  auto& memory = emulator.memory();
+  auto original = make_program(chain);
+  std::vector<std::uint32_t> program(original.begin(), original.end() - 1);
+  // After the VIF upload/readback, guest stores kick a real PATH3 DMA sprite.
+  // No host Gif::submit or Memory::advance is used by either execution policy.
+  const std::array<std::uint32_t, 12> suffix{{
+      0x34095000u, 0xAD09A010u, // D2_MADR = 0x5000
+      0x3409000Bu, 0xAD09A020u, // D2_QWC = 11
+      0x34090101u, 0xAD09A000u, // normal forward DMA, STR
+      0x8D09A000u, 0x31290100u, 0x1520FFFDu, 0u, // poll completion
+      0x1000FFFFu, 0u // bounded fixture uses a harmless terminal branch/NOP
+  }};
+  program.insert(program.end(), suffix.begin(), suffix.end());
+  std::vector<std::uint8_t> rom(ps2vita::Memory::kBiosSize);
+  const auto put = [&](std::size_t offset, std::uint32_t value) {
+    for (unsigned byte = 0u; byte < 4u; ++byte)
+      rom[offset + byte] = static_cast<std::uint8_t>(value >> (8u * byte));
+  };
+  for (std::size_t word = 0u; word < program.size(); ++word)
+    put((word + phase) * 4u, program[word]);
+  // An independent IOP loop makes delayed loads, branches and RAM writes live.
+  const std::array<std::uint32_t, 7> iop_program{{
+      0x34082000u, 0x8D090000u, 0u, 0x25290001u, 0xAD090000u,
+      0x1000FFFBu, 0u}};
+  for (std::size_t word = 0u; word < iop_program.size(); ++word)
+    put(0x1000u + word * 4u, iop_program[word]);
+  check(emulator.load_bios(rom.data(), rom.size()) && emulator.boot_bios(),
+        chain, phase, quantum, "paced graphics owned reset ROM boots");
+  emulator.iop().reset();
+  emulator.iop().state().pc = 0xBFC01000u;
+  memory.iop_write32(0x2000u, 0u);
+  memory.write32(kTag, 0x70000002u);
+  for (std::size_t word = 0u; word < kUnpack.size(); ++word)
+    memory.write32(kPayload + static_cast<std::uint32_t>(word * 4u), kUnpack[word]);
+  memory.write32(kOutput, 0xA55AA55Au);
+  constexpr std::uint32_t color = 0x80654321u;
+  const std::array<std::uint64_t, 22> packet{{
+      0x100000000000800Aull, 0xEull,
+      32u | (10ull << 16u), 0x4Cu, 128u | (1ull << 32u), 0x4Eu,
+      1u, 0x1Au, 0u, 0x18u,
+      31ull << 16u | 31ull << 48u, 0x40u, 0u, 0x47u,
+      6u, 0u, color, 1u, 3ull << 32u, 5u,
+      128u | (128ull << 16u) | (3ull << 32u), 5u}};
+  for (std::size_t word = 0u; word < packet.size(); ++word)
+    memory.write64(0x5000u + static_cast<std::uint32_t>(word * 8u), packet[word]);
+  constexpr std::array<std::uint32_t, 10> registers{{
+      0x10009000u, 0x10009010u, 0x10009020u, 0x10009030u,
+      0x1000A000u, 0x1000A010u, 0x1000A020u, 0x1000E000u,
+      0x1000E010u, 0x1000F000u}};
+  std::array<GraphicsSnapshot, 2> results;
+  std::uint64_t clock = 0u;
+  std::uint32_t frame = 0u;
+  for (unsigned stage = 0u; stage < results.size(); ++stage) {
+    // An odd endpoint and a subsequent 17-cycle continuation expose hidden
+    // EE branch / IOP delayed-load and scheduling-phase differences as well.
+    const std::uint32_t limit = stage == 0u ? 257u : 274u;
+    while (emulator.cpu().state().cycles < limit) {
+      const auto before = emulator.cpu().state().cycles;
+      auto last_reason = ps2vita::StopReason::StepLimit;
+      if (quantum == 0u) {
+        last_reason = emulator.run_slice(limit - static_cast<std::uint32_t>(before));
+        check(last_reason == ps2vita::StopReason::StepLimit,
+              chain, phase, quantum, "fixed-total graphics run stays live");
+      } else {
+        // Alternate elapsed-budget and quantum-cap frames. Clock time never
+        // advances the guest; only ordinary run_slice calls perform work.
+        const auto microseconds = (++frame & 1u) != 0u ? 2u : 5u;
+        const auto result = ps2vita::run_execution_budget({microseconds, quantum, 3u},
+            [&]() { return clock; }, [&](std::uint32_t request) {
+              const auto left = limit - static_cast<std::uint32_t>(
+                  emulator.cpu().state().cycles);
+              last_reason = emulator.run_slice(std::min(request, left));
+              ++clock;
+              return last_reason == ps2vita::StopReason::StepLimit &&
+                  emulator.cpu().state().cycles < limit;
+            });
+        check(result.quanta > 0u && result.quanta <= 3u &&
+                  (result.stop == ps2vita::ExecutionBudgetStop::Elapsed ||
+                   result.stop == ps2vita::ExecutionBudgetStop::QuantumLimit ||
+                   result.stop == ps2vita::ExecutionBudgetStop::CallbackStopped),
+              chain, phase, quantum, "paced graphics frame makes bounded progress");
+      }
+      // A broken scheduler must fail this fixture, not hang the test runner.
+      if (last_reason != ps2vita::StopReason::StepLimit ||
+          emulator.cpu().state().cycles == before) break;
+    }
+    // StepLimit is the run_slice return value, not a sticky CPU fault. A
+    // normally completed instruction still leaves Cpu::stop_reason as None.
+    check(emulator.cpu().state().cycles == limit &&
+              emulator.cpu().stop_reason() == ps2vita::StopReason::None &&
+              emulator.iop().stop_reason() == ps2vita::IopStopReason::None &&
+              emulator.iop().state().cycles == limit / 8u,
+          chain, phase, quantum, "paced EE endpoint and IOP horizon are exact");
+    check(memory.read32(kOutput) == kUnpack[4] &&
+              memory.iop_read32(0x2000u) > 0u && emulator.gs().pixel(0, 0) == color,
+          chain, phase, quantum, "VIF readback, live IOP stores and guest PATH3 pixels occur");
+    check(emulator.vif1().packets_submitted() == 1u &&
+              emulator.vif1().packets_rejected() == 0u &&
+              emulator.gif().packets_submitted() == 1u &&
+              emulator.gif().packets_rejected() == 0u &&
+              emulator.gif().sprites_emitted() == 1u && emulator.gif().pending_bytes() == 0u,
+          chain, phase, quantum, "paced graphics services each DMA exactly once");
+    std::vector<std::uint8_t> pending;
+    check(!memory.pop_vif1_packet(pending) && !memory.pop_gif_packet(pending),
+          chain, phase, quantum, "paced completed packet queues are empty");
+    auto& out = results[stage];
+    out.ee = emulator.cpu().state(); out.iop = emulator.iop().state();
+    out.iop_counter = memory.iop_read32(0x2000u);
+    out.frame = emulator.gs().color_frame();
+    out.vif_packets = emulator.vif1().packets_submitted();
+    out.gif_packets = emulator.gif().packets_submitted();
+    out.sprites = emulator.gif().sprites_emitted();
+    for (std::uint32_t address = 0u; address < 0x6000u; address += 4u)
+      out.touched_ram.push_back(memory.read32(address));
+    for (unsigned address = 0u; address < 0x4000u; address += 4u)
+      out.vu_data.push_back(memory.vu1_data_word(static_cast<std::uint16_t>(address)));
+    for (std::uint32_t address = 0u; address < 0x400000u; address += 4u)
+      out.vram.push_back(emulator.gif().read_local32(address));
+    for (int y = 0; y < ps2vita::Gs::kHeight; ++y)
+      for (int x = 0; x < ps2vita::Gs::kWidth; ++x)
+        out.preview.push_back(emulator.gs().pixel(x, y));
+    for (std::size_t i = 0u; i < registers.size(); ++i)
+      out.hardware[i] = memory.read32(registers[i]);
+  }
+  return results;
+}
+
 } // namespace
 
 int main() {
@@ -266,6 +436,12 @@ int main() {
               chain, phase, slices[index],
               "architectural result is invariant under host slice size");
       }
+      for (const auto quantum : {1u, 7u, 2000u}) {
+        const auto paced = run_fixture(chain, phase, quantum, true);
+        check(same_ee_architecture(paced.cpu, baseline.cpu) &&
+                  paced.output == baseline.output,
+              chain, phase, quantum, "paced terminal ELF stops without an extra guest slice");
+      }
       const auto bios_baseline = run_bios_fixture(chain, phase, slices[0]);
       for (std::size_t index = 1u; index < slices.size(); ++index) {
         const auto result = run_bios_fixture(chain, phase, slices[index]);
@@ -279,6 +455,14 @@ int main() {
                   result.iop.cycles == bios_baseline.iop.cycles,
               chain, phase, slices[index],
               "BIOS EE/IOP architectural result is invariant under host slice size");
+      }
+      const auto graphics_baseline = run_paced_graphics(chain, phase, 0u);
+      for (const auto quantum : {1u, 7u, 2000u}) {
+        const auto paced = run_paced_graphics(chain, phase, quantum);
+        check(same_snapshot(paced[0], graphics_baseline[0]) &&
+                  same_snapshot(paced[1], graphics_baseline[1]),
+              chain, phase, quantum,
+              "paced/fixed runs preserve EE/IOP, touched RAM, all VU data/VRAM and continuation");
       }
     }
   }

@@ -1,5 +1,6 @@
 #include "ps2vita/aot.hpp"
 #include "ps2vita/emulator.hpp"
+#include "ps2vita/execution_budget.hpp"
 #include "screen.hpp"
 
 #include <psp2/ctrl.h>
@@ -19,6 +20,11 @@ constexpr const char* kProbePath = "ux0:data/ps2vita/startup.txt";
 constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
+constexpr std::uint64_t kProgressInterval = 1000000u;
+// Host pacing only, not PS2 timing. Leave room for UI/presentation, while
+// replacing the fixed one-slice-per-VBlank throughput ceiling. The deadline
+// is soft: synchronous graphics inside one quantum can exceed this budget.
+constexpr ps2vita::ExecutionBudget kFrameExecution{8000u, 2000u, 1024u};
 
 std::uint64_t benchmark_clock_microseconds() {
   return sceKernelGetProcessTimeWide();
@@ -262,7 +268,13 @@ int main() {
   bool running = false;
   bool show_gs = false;
   std::uint32_t previous = 0;
-  std::uint64_t next_progress_cycle = 1000000;
+  std::uint64_t next_progress_cycle = kProgressInterval;
+  std::uint64_t last_progress_cycle = 0;
+  const auto reset_progress = [&]() {
+    next_progress_cycle = kProgressInterval;
+    last_progress_cycle = 0;
+    truncate_report(kProgressPath);
+  };
 
   emulator.gs().clear(0xFF120A20);
   emulator.gs().triangle({8, 100, 200, 0xFFFF4E9A},
@@ -301,6 +313,7 @@ int main() {
         std::snprintf(message, sizeof(message), "COULD NOT READ ANY ELF");
       } else {
         const auto result = emulator.load_elf(image.data(), image.size());
+        reset_progress();
         if (result.ok) std::snprintf(message, sizeof(message), "%s / ENTRY %08X",
             loaded_external ? "EXTERNAL ELF LOADED" : "BUILT-IN TEST LOADED", result.entry);
         else std::snprintf(message, sizeof(message), "LOAD ERROR: %s", result.error);
@@ -315,24 +328,40 @@ int main() {
         std::snprintf(message, sizeof(message), "BIOS MUST BE EXACTLY 4 MIB");
       } else {
         emulator.boot_bios();
+        reset_progress();
         std::snprintf(message, sizeof(message), "BIOS MAPPED / RESET BFC00000");
       }
     }
     if ((pressed & SCE_CTRL_CROSS) && emulator.ready()) running = !running;
-    if ((pressed & SCE_CTRL_START) && emulator.ready()) { emulator.reset(); running = false; }
-    if ((pressed & SCE_CTRL_SQUARE) && emulator.ready()) {
-      const auto reason = emulator.cpu().step();
+    if ((pressed & SCE_CTRL_START) && emulator.ready()) {
+      emulator.reset();
       running = false;
-      if (reason != ps2vita::StopReason::None) {
+      reset_progress();
+    }
+    if ((pressed & SCE_CTRL_SQUARE) && emulator.ready()) {
+      // Manual stepping must use the same EE/IOP/DMA/graphics scheduler.
+      const auto reason = emulator.run_slice(1u);
+      running = false;
+      if (reason != ps2vita::StopReason::StepLimit) {
         write_fault(emulator, reason);
         std::snprintf(message, sizeof(message), "STOPPED: %s", ps2vita::stop_reason_name(reason));
       }
     }
     if (running) {
-      const auto reason = emulator.run_slice(25000);
-      if (emulator.cpu().state().cycles >= next_progress_cycle) {
+      auto reason = ps2vita::StopReason::StepLimit;
+      ps2vita::run_execution_budget(kFrameExecution,
+          benchmark_clock_microseconds, [&](std::uint32_t quantum) {
+            reason = emulator.run_slice(quantum);
+            return reason == ps2vita::StopReason::StepLimit;
+          });
+      // Controls/presentation and diagnostic I/O remain once per UI frame.
+      // Pacing limits/clock faults are NOT guest stop reasons.
+      const auto cycles = emulator.cpu().state().cycles;
+      if (ps2vita::execution_progress_due(cycles, next_progress_cycle,
+                                          last_progress_cycle)) {
         write_progress(emulator);
-        next_progress_cycle = emulator.cpu().state().cycles + 1000000;
+        last_progress_cycle = cycles;
+        next_progress_cycle = ps2vita::next_execution_progress(cycles, kProgressInterval);
       }
       if (reason != ps2vita::StopReason::StepLimit) {
         running = false;

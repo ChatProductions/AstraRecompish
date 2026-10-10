@@ -64,6 +64,19 @@ Current Vita3K correctness evidence:
 
 ![AstraRecomp Vita3K monitor showing both AOT probes and the performance workload passing](assets/vita3k-performance-gate.png)
 
+## Monitor pacing is not guest FPS
+
+The monitor no longer requests only one 25,000-instruction slice per VBlank.
+It repeats 2,000-instruction scheduler quanta inside an 8 ms soft compute
+budget, with monotonic-clock guards and a finite iteration limit. Controls,
+diagnostic I/O and presentation remain outside that inner loop. One synchronous
+graphics service can exceed the budget; this is not a hard frame deadline.
+
+This policy allows faster execution to do more work before a UI refresh, but
+does not establish an instruction rate or guest FPS. Preserve complete-runtime
+measurements separately from the [host GIF submit benchmark](GIF_TRACE.md#deterministic-host-graphics-throughput).
+See the [pacing regression gates](SESSION_2026-10-10_VITA_PACING.md).
+
 ## Physical-Vita decision
 
 Run the identical VPK on a homebrew-enabled Vita, reboot once to reduce stale
