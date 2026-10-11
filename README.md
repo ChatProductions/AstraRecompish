@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **56/56 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **58/58 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -217,6 +217,15 @@ selects rational **50-field/s** video and HBlank deadlines from CMOD/SYNCV,
 preserving pending edges on mode changes. Other unsupported modes retain an
 explicit legacy fallback. See the
 [dispatch and PAL timing checkpoint](docs/SESSION_2026-10-11_SYSTEM_DISPATCH_PAL.md).
+
+Empty graphics service now checks all four completed queues before constructing
+and draining a packet. Partial DIRECT/XGKICK work is not advanced by this guard.
+IOP Timer 5 retains its exact prescaler carry with shifts/masks instead of an ARM
+software division; target/reset arithmetic and device deadlines are unchanged.
+The owned queue and timer fixtures pass **297 and 876 checks**, and fresh 300M
+boots preserve the checked architectural/graphics digests. These are validated
+work reductions, not a measured Vita FPS gain. See the
+[queue and prescaler checkpoint](docs/SESSION_2026-10-11_QUEUE_PRESCALER.md).
 
 The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
 samples using the selected DISPLAY's requested source extent. The NTSC/PAL

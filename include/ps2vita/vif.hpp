@@ -49,6 +49,9 @@ public:
   bool packet_capture_overflow() const { return capture_overflow_; }
   bool submit(const std::uint8_t* data, std::size_t size);
   bool pop_gif_packet(std::vector<std::uint8_t>& packet);
+  bool has_gif_packet() const {
+    return !gif_packets_.empty() || vu1_.has_path1_packet();
+  }
   std::size_t pending_direct_bytes() const { return direct_remaining_; }
 
   std::uint64_t packets_submitted() const { return packets_submitted_; }

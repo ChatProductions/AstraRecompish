@@ -56,6 +56,7 @@ public:
   void set_top(std::uint16_t top) { top_ = top & 0x3FFu; }
   void run(std::uint64_t max_pairs);
   bool pop_path1_packet(std::vector<std::uint8_t>& packet);
+  bool has_path1_packet() const { return !path1_packets_.empty(); }
   void enable_store_trace(bool enabled) { trace_stores_ = enabled; }
   void enable_causal_trace(bool enabled);
   void invalidate_data_cause(std::uint32_t address);

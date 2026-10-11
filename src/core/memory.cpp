@@ -872,12 +872,16 @@ void Memory::advance(std::uint32_t cycles) {
     if ((mode & 0x40u) != 0u && (mode & 0x80u) == 0u)
       mode |= 0x400u;
     if ((mode & 1u) == 0u) { // No gate: count from the selected clock source.
-      static constexpr std::uint32_t rates[4] = {1u, 8u, 16u, 256u};
-      const auto rate = rates[(mode >> 13) & 3u];
+      static constexpr unsigned rate_shifts[4] = {0u, 3u, 4u, 8u};
+      const auto rate_shift = rate_shifts[(mode >> 13) & 3u];
       const auto prescaled =
           static_cast<std::uint64_t>(timer5_prescale_remainder_) + iop_cycles;
-      const auto ticks = prescaled / rate;
-      timer5_prescale_remainder_ = static_cast<std::uint32_t>(prescaled % rate);
+      // All four existing clock divisors are powers of two. Keep the full
+      // accumulator width and exact remainder, without a variable-width divide
+      // on ARM. Target/reset arithmetic below still uses its independent divisor.
+      const auto ticks = prescaled >> rate_shift;
+      timer5_prescale_remainder_ = static_cast<std::uint32_t>(
+          prescaled & ((std::uint64_t{1} << rate_shift) - 1u));
       if (ticks != 0u) {
         const auto old_count = raw_iop(0x04A0u);
         const auto target = raw_iop(0x04A8u);

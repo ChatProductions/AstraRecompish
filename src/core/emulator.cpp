@@ -80,6 +80,9 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
 }
 
 void Emulator::service_graphics() {
+  // Empty pops do not advance partial transfers. Only completed queues matter,
+  // including PATH1 output that has not been moved into VIF's DIRECT queue.
+  if (!memory_.has_completed_graphics_packets() && !vif1_.has_gif_packet()) return;
   std::vector<std::uint8_t> packet;
   while (memory_.pop_gif_packet(packet))
     gif_.submit(packet.data(), packet.size());

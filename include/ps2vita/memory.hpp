@@ -127,6 +127,9 @@ public:
   // Retrieves one completed EE GIF DMA payload in submission order.
   bool pop_gif_packet(std::vector<std::uint8_t>& packet);
   bool pop_vif1_packet(std::vector<std::uint8_t>& packet);
+  bool has_completed_graphics_packets() const {
+    return !gif_packets_.empty() || !vif1_packets_.empty();
+  }
   const std::vector<VifDmaSpan>& vif_dma_spans() const { return vif_dma_spans_; }
   bool has_bios() const { return bios_loaded_; }
   std::uint32_t page_generation(std::uint32_t address) const;
