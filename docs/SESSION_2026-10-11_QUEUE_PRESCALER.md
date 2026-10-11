@@ -142,3 +142,55 @@ The VU1 count remains normal 998-pair E-bit termination. Do not inflate it or
 call it the cause of missing later geometry: the later cloud DIRECT work is
 guest EE-produced, and the prior PATH1 warning was also reference-reproduced.
 Firmware and derived captures remain ignored/local, never published to GitHub.
+
+## Finished three-billion-cycle run and later rendering boundary
+
+The same fresh run finishes normally at **3,000,000,000 modeled EE cycles**,
+EE PC 00081FD0, IOP PC 0000AE98. It has 165,857 total GIF submissions,
+696,010 triangles, 17,928 sprites, **zero GIF parser rejections**, but **nine
+VIF packet rejections**. Final PMODE=66, DISPFB2=1450,
+DISPLAY2=001FF9FF01848290 and FRAME=A0000. The trace footer still describes
+only the first-1B prefix, not all 165,857 submissions.
+
+At 1.45B camera Z is 103.175415, phase 2, iteration 204, scene 0/substate 1.
+At 1.5B Z is 106.269623, phase 3, iteration 207, current/requested scene 2,
+substate 0. Those guest values remain fixed through 3B. Static guest control
+flow explains this: the animation loop at 00216490 exits explicitly when its
+current scene is 2. Its caller sets its completion flag, signals a semaphore,
+then invokes SleepThread. This is intentional animation-thread completion,
+not evidence of a stuck VU loop or lost restart.
+
+Scene 1 is another initial variant, not necessarily a missing sequential stage
+after scene 0: startup selection at 00216520 chooses it for a particular guest
+status value. The camera phase-3 return advances the cloud substate, whose exit
+requests scene 2. This explanation comes from ordinary MIPS control flow in the
+existing local RAM snapshot; it does not establish complete visual accuracy or
+the meaning of every status producer.
+
+The actual selected-display images fade from title/cloud/light detail to a dark
+cloud at 1.4B and black output by 1.5B. Later sprite counts and buffer flips
+continue, so not all guest activity has stopped. VIF rejections are still zero
+at 1.55B and first observed as nine at 1.6B. This is a **separate later consumer
+boundary to diagnose**, not a justified timing patch or proved cause of every
+missing pixel. The whole boot animation, next menu and physical Vita speed
+remain unverified.
+
+Local video:
+`build-release/video-live-intro-3b-2026-10-11/AstraRecomp-PS2-live-intro-1B-to-3B.mp4`.
+It uses nine actual **live default-quarter-grid** snapshots at
+1B/1.1B/1.2B/1.25B/1.3B/1.35B/1.4B/1.5B/3B. Each uses its actual selected
+DISPFB source; all labeled PNG guest-image regions match the corresponding
+nearest-enlarged live RGB exactly. No post-1B replay, sharpening, replacement
+graphics or interpolated motion is used. Later black images are retained and
+rejection counts are labeled.
+
+The video holds each checkpoint for 1.5 seconds: H.264/yuv420p, 640x372,
+405 encoded frames at 30 FPS, **13.5 seconds**, silent, 104,740 bytes. Encoding
+rate is not emulator FPS. Metadata probe and full decode pass. SHA-256:
+`0d09c725685ebdaac0700c65df7696c94d7e064681cf9f4b5b68a3b5d7e59112`.
+
+Next diagnostic: a fresh first-VIF-rejection probe with coarse 2048-cycle outer
+slices until 1.4B, then single-cycle slices to locate the first failed command,
+with a 1.7B cap. This records source-span/context evidence instead of assuming
+that later black output needs more VU pairs. No unsupported instruction or
+streaming fix should be guessed before that context is available.

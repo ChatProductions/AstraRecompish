@@ -227,6 +227,14 @@ boots preserve the checked architectural/graphics digests. These are validated
 work reductions, not a measured Vita FPS gain. See the
 [queue and prescaler checkpoint](docs/SESSION_2026-10-11_QUEUE_PRESCALER.md).
 
+A fresh PAL boot now reaches **3 billion modeled EE cycles**. Live captures
+show the cloud/light sequence advancing beyond the title; guest control flow
+then exits the animation thread normally. Later output remains black with nine
+new VIF packet rejections, so complete visual intro/menu correctness is still
+unverified. A local held-checkpoint video records both the progress and this
+limit; it is not real-time Vita FPS or a replay of the unrecorded later stream.
+See the [longer boot and video notes](docs/SESSION_2026-10-11_QUEUE_PRESCALER.md#finished-three-billion-cycle-run-and-later-rendering-boundary).
+
 The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
 samples using the selected DISPLAY's requested source extent. The NTSC/PAL
 INT+FFMD geometry avoids reading adjacent storage below a half-height source;
