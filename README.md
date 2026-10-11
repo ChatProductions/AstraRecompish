@@ -73,7 +73,7 @@ core is real BIOS execution, not a renamed frontend or a fake compatibility scre
 
 ## Project status
 
-Latest verified research checkpoint: **October 10, 2026**. These are development
+Latest verified research checkpoint: **October 11, 2026**. These are development
 results, not a game-compatibility list or a measured completion percentage.
 
 | Area | Current state |
@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **50/50 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **53/53 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -185,6 +185,14 @@ checks every starting address in the 4 MiB graphics memory, including wrapping
 and later writes. A three-trial native-grid PC pair improves submit throughput
 by about 5%; this is not a Vita FPS measurement. See the
 [word-read evidence and sanitizer gates](docs/SESSION_2026-10-10_TEXTURE_WORD_READS.md).
+
+Aligned framebuffer reads and writes now use the same bounded, alias-safe word
+approach. Three rotated adjacent PC pairs reduce default-grid graphics-submit
+time by **28%** (about **39% higher throughput**) with unchanged complete VRAM
+and preview hashes. Byte-oracle fixtures cover masks, wraparound, blending and
+live feedback on all three grids; Vita-generated code replaces byte accesses
+with word loads/stores. This is not measured Vita FPS. See the
+[framebuffer performance checkpoint](docs/SESSION_2026-10-11_TARGET_WORDS.md).
 
 The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
 samples using the selected DISPLAY's requested source extent. The NTSC/PAL

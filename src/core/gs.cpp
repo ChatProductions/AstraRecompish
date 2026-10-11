@@ -13,6 +13,29 @@
 namespace ps2vita {
 namespace {
 
+constexpr bool kNativeLittleEndian =
+#if (defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__) && \
+     __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__) || \
+    (defined(_MSC_VER) && (defined(_M_IX86) || defined(_M_X64) || \
+                          defined(_M_ARM) || defined(_M_ARM64)))
+    true;
+#else
+    false;
+#endif
+
+void store_aligned_color32(std::vector<std::uint8_t>& memory,
+                           std::uint32_t address, std::uint32_t value) {
+  // FRAME base and every native-pixel offset are multiples of four. After
+  // wrapping, an aligned word starts at <=0x3FFFFC and cannot straddle VRAM.
+  // memcpy is alias-safe; keep each store live and in the original tile order.
+  if constexpr (kNativeLittleEndian) {
+    std::memcpy(memory.data() + (address & 0x3FFFFFu), &value, sizeof(value));
+  } else {
+    for (unsigned b = 0; b < 4; ++b)
+      memory[(address + b) & 0x3FFFFFu] = value >> (b * 8u);
+  }
+}
+
 std::int64_t edge(const GsVertex& a, const GsVertex& b, int x, int y) {
   return static_cast<std::int64_t>(x - a.x) * (b.y - a.y) -
          static_cast<std::int64_t>(y - a.y) * (b.x - a.x);
@@ -74,6 +97,12 @@ bool Gs::set_pixel_watch(const std::vector<std::uint32_t>& addresses,
 }
 
 std::uint32_t Gs::target_read(std::uint32_t address) const {
+  // Only FRAME pixel addresses and validated aligned watches call this.
+  if constexpr (kNativeLittleEndian) {
+    std::uint32_t value;
+    std::memcpy(&value, color_memory_->data() + (address & 0x3FFFFFu), sizeof(value));
+    return value;
+  }
   std::uint32_t value = 0;
   for (unsigned b = 0; b < 4; ++b)
     value |= std::uint32_t{(*color_memory_)[(address + b) & 0x3FFFFFu]} << (8u * b);
@@ -84,16 +113,15 @@ void Gs::target_write(int x, int y, std::uint32_t color, std::uint32_t mask) {
   if (static_cast<unsigned>(x * kRasterScale) >= color_width_) return;
   // A bulk unmasked tile operation needs no old destination reads. Measured
   // beneficial for 4x4 tiles, not the separate one-pixel diagnostic: leave
-  // that build's word route unchanged. Preserve byte-wise VRAM wrapping and
-  // the masked route for FBMSK/PSMCT24/RGB_ONLY preservation.
+  // that build's mask selection unchanged. Preserve VRAM wrapping and the
+  // per-word masked route for FBMSK/PSMCT24/RGB_ONLY preservation.
   if (kRasterScale > 1 && mask == 0u) {
     for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
       for (unsigned dx = 0; dx < static_cast<unsigned>(kRasterScale); ++dx) {
         const auto address = color_base_ +
             ((y * static_cast<unsigned>(kRasterScale) + dy) * color_width_ +
              x * static_cast<unsigned>(kRasterScale) + dx) * 4u;
-        for (unsigned b = 0; b < 4; ++b)
-          (*color_memory_)[(address + b) & 0x3FFFFFu] = color >> (b * 8u);
+        store_aligned_color32(*color_memory_, address, color);
       }
     return;
   }
@@ -103,8 +131,7 @@ void Gs::target_write(int x, int y, std::uint32_t color, std::uint32_t mask) {
           ((y * static_cast<unsigned>(kRasterScale) + dy) * color_width_ +
            x * static_cast<unsigned>(kRasterScale) + dx) * 4u;
       const auto value = (color & ~mask) | (target_read(address) & mask);
-      for (unsigned b = 0; b < 4; ++b)
-        (*color_memory_)[(address + b) & 0x3FFFFFu] = value >> (b * 8u);
+      store_aligned_color32(*color_memory_, address, value);
     }
 }
 
