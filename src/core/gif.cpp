@@ -335,8 +335,8 @@ std::uint32_t Gif::sample_texture(const TextureSamplerState& state,
   };
   if (format > 2u) return vertex_color;
   struct Tap {
-    unsigned u = 0, v = 0;
-    std::uint32_t address = 0, raw = 0, expanded = 0;
+    unsigned u, v;
+    std::uint32_t address, raw, expanded;
   };
   const auto read_tap = [&](std::int64_t x, std::int64_t y) {
     Tap tap;
@@ -383,7 +383,9 @@ std::uint32_t Gif::sample_texture(const TextureSamplerState& state,
     raw_u = split(fixed_u, fraction_u);
     raw_v = split(fixed_v, fraction_v);
   }
-  std::array<Tap, 4> taps{};
+  // read_tap assigns every member. Nearest uses only tap 0; linear assigns
+  // all four before filtering or tracing, so unused taps need no clearing.
+  std::array<Tap, 4> taps;
   taps[0] = read_tap(raw_u, raw_v);
   auto color = taps[0].expanded;
   if (linear) {

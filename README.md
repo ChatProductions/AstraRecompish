@@ -201,6 +201,13 @@ the target byte oracle now passes **204 checks per grid**. These are separate
 host measurements, not cumulative gains or Vita FPS. See the
 [row-copy experiment and stronger regression gates](docs/SESSION_2026-10-11_TARGET_ROWS.md).
 
+A sampler follow-up removes an unconditional 80-byte temporary clear while
+preserving the existing ARM-vectorized filter. Another packed-channel rewrite
+was tested but discarded; overlapping host timings do not establish a new
+speedup. Texture regression suites with expanded nearest-format coverage pass
+**872/824/812 checks** on quarter/half/native grids. See the
+[sampler candidate-selection checkpoint](docs/SESSION_2026-10-11_SAMPLER_INIT.md).
+
 The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
 samples using the selected DISPLAY's requested source extent. The NTSC/PAL
 INT+FFMD geometry avoids reading adjacent storage below a half-height source;

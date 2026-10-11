@@ -291,7 +291,14 @@ template<class T>
 bool extended_trace_matches(const T& trace, const Expected& expected) {
   if constexpr (HasFilterTrace<T>::value) {
     if (trace.linear != expected.linear) return false;
-    if (!expected.linear) return true;
+    if (!expected.linear) {
+      const std::array<unsigned, 4> coordinates{};
+      const std::array<std::uint32_t, 4> words{};
+      return trace.fixed_u == 0 && trace.fixed_v == 0 &&
+          trace.fraction_u == 0u && trace.fraction_v == 0u &&
+          trace.tap_u == coordinates && trace.tap_v == coordinates &&
+          trace.tap_address == words && trace.tap_raw == words && trace.tap_expanded == words;
+    }
     return trace.fixed_u == expected.fixed_u && trace.fixed_v == expected.fixed_v &&
         trace.fraction_u == expected.fu && trace.fraction_v == expected.fv &&
         trace.tap_u == expected.u && trace.tap_v == expected.v &&
@@ -452,6 +459,32 @@ void format_and_order_cases() {
   item = {"MODULATE alpha test is after TFX", 1.0f, 1.0f};
   item.tfx = 0u; item.vertex_color = 0x40808080u;
   item.test |= 1u | (5u << 1u) | (30u << 4u); run_case(item);
+
+  const std::array<const char*, 3> format_names{{"PSM32", "PSM24", "PSM16"}};
+  const std::array<const char*, 3> primitive_names{{"ST triangle", "UV triangle", "UV sprite"}};
+  const std::array<const char*, 4> sample_names{{
+      "AEM zero", "AEM disabled zero", "TA0 nonzero", "TA1 high bit"}};
+  for (unsigned format = 0u; format < format_names.size(); ++format) {
+    std::array<std::uint32_t, 64> texture{};
+    for (unsigned index = 0u; index < texture.size(); ++index)
+      texture[index] = format == 2u ? 0xFFFFu : 0xEC97531Fu ^ (index * 0x01030711u);
+    texture[0] = format == 1u ? 0xDE000000u : 0u;
+    texture[9] = format == 2u ? 0x3421u : 0x59112233u;
+    texture[10] = format == 2u ? 0xB421u : 0xD7112233u;
+    for (const auto primitive : {Primitive::StTriangle, Primitive::UvTriangle, Primitive::UvSprite})
+      for (unsigned sample = 0u; sample < sample_names.size(); ++sample) {
+        char name[96];
+        std::snprintf(name, sizeof(name), "nearest %s %s %s", format_names[format],
+                      primitive_names[static_cast<unsigned>(primitive)], sample_names[sample]);
+        Case nearest{name, sample >= 2u ? 1.25f + static_cast<float>(sample - 2u) : .25f,
+                     sample >= 2u ? 1.25f : .25f, primitive};
+        nearest.format = format;
+        nearest.tex1 = 0u; // MMAG=0: only the assigned first tap may contribute.
+        nearest.texa = 0x35u | (0xD7ull << 32u) | (sample == 1u ? 0u : 0x8000u);
+        nearest.texture = &texture;
+        run_case(nearest);
+      }
+  }
 }
 
 void perspective_guard_cases() {
