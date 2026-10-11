@@ -23,13 +23,25 @@ constexpr bool kNativeLittleEndian =
     false;
 #endif
 
-void store_aligned_color32(std::vector<std::uint8_t>& memory,
+std::uint32_t load_aligned_color32(const std::uint8_t* memory, std::uint32_t address) {
+  if constexpr (kNativeLittleEndian) {
+    std::uint32_t value;
+    std::memcpy(&value, memory + (address & 0x3FFFFFu), sizeof(value));
+    return value;
+  }
+  std::uint32_t value = 0;
+  for (unsigned b = 0; b < 4; ++b)
+    value |= std::uint32_t{memory[(address + b) & 0x3FFFFFu]} << (8u * b);
+  return value;
+}
+
+void store_aligned_color32(std::uint8_t* memory,
                            std::uint32_t address, std::uint32_t value) {
   // FRAME base and every native-pixel offset are multiples of four. After
   // wrapping, an aligned word starts at <=0x3FFFFC and cannot straddle VRAM.
   // memcpy is alias-safe; keep each store live and in the original tile order.
   if constexpr (kNativeLittleEndian) {
-    std::memcpy(memory.data() + (address & 0x3FFFFFu), &value, sizeof(value));
+    std::memcpy(memory + (address & 0x3FFFFFu), &value, sizeof(value));
   } else {
     for (unsigned b = 0; b < 4; ++b)
       memory[(address + b) & 0x3FFFFFu] = value >> (b * 8u);
@@ -98,40 +110,46 @@ bool Gs::set_pixel_watch(const std::vector<std::uint32_t>& addresses,
 
 std::uint32_t Gs::target_read(std::uint32_t address) const {
   // Only FRAME pixel addresses and validated aligned watches call this.
-  if constexpr (kNativeLittleEndian) {
-    std::uint32_t value;
-    std::memcpy(&value, color_memory_->data() + (address & 0x3FFFFFu), sizeof(value));
-    return value;
-  }
-  std::uint32_t value = 0;
-  for (unsigned b = 0; b < 4; ++b)
-    value |= std::uint32_t{(*color_memory_)[(address + b) & 0x3FFFFFu]} << (8u * b);
-  return value;
+  return load_aligned_color32(color_memory_->data(), address);
 }
 
 void Gs::target_write(int x, int y, std::uint32_t color, std::uint32_t mask) {
   if (static_cast<unsigned>(x * kRasterScale) >= color_width_) return;
+  // No callbacks/rebinding occur within this tile. Snapshot only target setup,
+  // never destination values; masked words still read live in dy/dx order.
+  auto* const memory = color_memory_->data();
+  const auto row_stride = color_width_ * 4u;
+  const auto first = color_base_ +
+      (y * static_cast<unsigned>(kRasterScale) * color_width_ +
+       x * static_cast<unsigned>(kRasterScale)) * 4u;
   // A bulk unmasked tile operation needs no old destination reads. Measured
   // beneficial for 4x4 tiles, not the separate one-pixel diagnostic: leave
   // that build's mask selection unchanged. Preserve VRAM wrapping and the
   // per-word masked route for FBMSK/PSMCT24/RGB_ONLY preservation.
   if (kRasterScale > 1 && mask == 0u) {
+    if constexpr (kNativeLittleEndian && kRasterScale == 4) {
+      // A quarter-grid row is aligned to 16 bytes: FRAME base, stride and
+      // x*scale*4 all preserve that alignment. Wrapping keeps it at most
+      // 0x3FFFF0, so copy the complete unmasked row without crossing VRAM.
+      std::array<std::uint32_t, kRasterScale> row;
+      row.fill(color);
+      for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
+        std::memcpy(memory + ((first + dy * row_stride) & 0x3FFFFFu),
+                    row.data(), kRasterScale * sizeof(std::uint32_t));
+      return;
+    }
     for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
       for (unsigned dx = 0; dx < static_cast<unsigned>(kRasterScale); ++dx) {
-        const auto address = color_base_ +
-            ((y * static_cast<unsigned>(kRasterScale) + dy) * color_width_ +
-             x * static_cast<unsigned>(kRasterScale) + dx) * 4u;
-        store_aligned_color32(*color_memory_, address, color);
+        const auto address = first + dy * row_stride + dx * 4u;
+        store_aligned_color32(memory, address, color);
       }
     return;
   }
   for (unsigned dy = 0; dy < static_cast<unsigned>(kRasterScale); ++dy)
     for (unsigned dx = 0; dx < static_cast<unsigned>(kRasterScale); ++dx) {
-      const auto address = color_base_ +
-          ((y * static_cast<unsigned>(kRasterScale) + dy) * color_width_ +
-           x * static_cast<unsigned>(kRasterScale) + dx) * 4u;
-      const auto value = (color & ~mask) | (target_read(address) & mask);
-      store_aligned_color32(*color_memory_, address, value);
+      const auto address = first + dy * row_stride + dx * 4u;
+      const auto value = (color & ~mask) | (load_aligned_color32(memory, address) & mask);
+      store_aligned_color32(memory, address, value);
     }
 }
 

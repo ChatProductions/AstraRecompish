@@ -194,6 +194,13 @@ live feedback on all three grids; Vita-generated code replaces byte accesses
 with word loads/stores. This is not measured Vita FPS. See the
 [framebuffer performance checkpoint](docs/SESSION_2026-10-11_TARGET_WORDS.md).
 
+A further bounded default-grid row-copy/setup change takes **16% less submit
+time** (about **18% higher throughput**) versus that word-access checkpoint in
+a new five-trial PC comparison. Image and full-VRAM hashes remain identical;
+the target byte oracle now passes **204 checks per grid**. These are separate
+host measurements, not cumulative gains or Vita FPS. See the
+[row-copy experiment and stronger regression gates](docs/SESSION_2026-10-11_TARGET_ROWS.md).
+
 The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
 samples using the selected DISPLAY's requested source extent. The NTSC/PAL
 INT+FFMD geometry avoids reading adjacent storage below a half-height source;

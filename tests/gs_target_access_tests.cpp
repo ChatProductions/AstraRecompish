@@ -65,6 +65,186 @@ bool preview(ps2vita::Gs& gs, const std::vector<std::uint8_t>& expected,
   return true;
 }
 
+using Sample = std::array<int, 2>;
+
+std::vector<Sample> target_samples(unsigned base, unsigned width) {
+  const unsigned visible_width = std::min(width, 640u);
+  const int last_x = static_cast<int>(visible_width / kScale) - 1;
+  const int last_y = ps2vita::Gs::kHeight - 1;
+  std::vector<Sample> samples;
+  const auto add = [&](int x, int y) {
+    if (x < 0 || x > last_x || y < 0 || y > last_y) return;
+    const Sample sample{x, y};
+    if (std::find(samples.begin(), samples.end(), sample) == samples.end())
+      samples.push_back(sample);
+  };
+  for (const int y : {0, 1, last_y})
+    for (const int x : {0, 1, last_x}) add(x, y);
+  add(std::min(7, last_x), std::min(5, last_y));
+
+  // Derive edge cases from the independent 64-bit linear address, rather
+  // than duplicating the production row increment or power-of-two wrap.
+  for (unsigned y = 0; y < 448u; ++y) {
+    if (y != 0u && address(base, width, 0u, y) / kBytes !=
+        address(base, width, 0u, y - 1u) / kBytes) {
+      for (const int x : {0, last_x}) {
+        add(x, static_cast<int>((y - 1u) / kScale));
+        add(x, static_cast<int>(y / kScale));
+      }
+    }
+    for (unsigned x = 0; x < visible_width; ++x) {
+      const auto at = address(base, width, x, y) % kBytes;
+      if (at != 0u && at != kBytes - 4u) continue;
+      const int sample_x = static_cast<int>(x / kScale);
+      const int sample_y = static_cast<int>(y / kScale);
+      add(sample_x - 1, sample_y);
+      add(sample_x, sample_y);
+      add(sample_x + 1, sample_y);
+    }
+  }
+  return samples;
+}
+
+void check_target(bool ok, const char* label, unsigned base, unsigned fbw,
+                  unsigned operation) {
+  char detail[160];
+  std::snprintf(detail, sizeof(detail), "%s (base=%u FBW=%u operation=%u)",
+                label, base, fbw, operation);
+  check(ok, detail);
+}
+
+void stride_and_wrap_matrix() {
+  auto expected = seed(), memory = expected;
+  ps2vita::Gs gs;
+  gs.set_depth_state(ps2vita::Gs::DepthTest::Always, false);
+  struct Operation { std::uint32_t mask, color; unsigned format; bool rgb_only; };
+  const std::array<Operation, 7> operations{{
+      {0u, 0x01FEE180u, 0u, false},
+      {0u, 0xFE102345u, 0u, false},
+      {0x5AA53CC3u, 0x817E01FFu, 0u, false},
+      {0xFFFFFFFFu, 0xFFFFFFFFu, 0u, false},
+      {0u, 0xEA735291u, 1u, false},
+      {0x00FF00FFu, 0x43987654u, 1u, false},
+      {0x00000FF0u, 0x08ABCDEFu, 0u, true},
+  }};
+  for (const unsigned base : {0u, 511u})
+    for (const unsigned fbw : {1u, 2u, 10u, 63u}) {
+      const unsigned width = fbw * 64u;
+      const auto samples = target_samples(base, width);
+      for (unsigned operation = 0; operation < operations.size(); ++operation) {
+        const auto& op = operations[operation];
+        // Every word has its own destination alpha. Some selected tiles
+        // overlap; seed them in order before applying any color operation.
+        for (unsigned i = 0; i < samples.size(); ++i)
+          for (unsigned row = 0; row < kScale; ++row)
+            for (unsigned column = 0; column < kScale; ++column) {
+              const auto alpha = (17u + i * 61u + row * 43u + column * 29u) & 255u;
+              const auto rgb = (0x00765432u ^ (i * 0x10203u + row * 0x504u + column)) &
+                  0x00FFFFFFu;
+              const auto at = address(base, width, samples[i][0] * kScale + column,
+                                      samples[i][1] * kScale + row);
+              store(expected, at, (alpha << 24u) | rgb);
+              store(memory, at, (alpha << 24u) | rgb);
+            }
+        const auto frame = base | (std::uint64_t{fbw} << 16u) |
+            (std::uint64_t{op.format} << 24u) | (std::uint64_t{op.mask} << 32u);
+        const auto mask = op.mask | (op.format == 1u || op.rgb_only ? 0xFF000000u : 0u);
+        gs.set_color_target(&memory, frame);
+        gs.set_alpha_test(op.rgb_only ? 1u | (3u << 12u) : 0u);
+        // Reverse the order on alternate operations to exercise subsequent
+        // writes to already-live destination words as well as first writes.
+        for (unsigned step = 0; step < samples.size(); ++step) {
+          const unsigned i = operation % 2u ? samples.size() - 1u - step : step;
+          const auto color = op.color ^ (i * 0x01030507u);
+          tile(expected, base, width, samples[i][0], samples[i][1], color, mask);
+          gs.point({samples[i][0], samples[i][1], 0u, color});
+        }
+        check_target(memory == expected, "stride/wrap writes match every VRAM byte",
+                     base, fbw, operation);
+        check_target(preview(gs, expected, base, width), "stride/wrap preview matches oracle",
+                     base, fbw, operation);
+      }
+      // Clear intentionally ignores FBMSK and PSMCT24 alpha preservation.
+      // Keep the preceding RGB_ONLY state active to cover that bypass too.
+      gs.set_color_target(&memory, base | (std::uint64_t{fbw} << 16u) |
+          (1ull << 24u) | (0xFFFFFFFFull << 32u));
+      constexpr auto clear_color = 0xA7D34985u;
+      gs.clear(clear_color);
+      for (int y = 0; y < ps2vita::Gs::kHeight; ++y)
+        for (int x = 0; x < ps2vita::Gs::kWidth; ++x)
+          tile(expected, base, width, x, y, clear_color, 0u);
+      check_target(memory == expected, "PSMCT24/full-mask clear matches every VRAM byte",
+                   base, fbw, operations.size());
+      check_target(preview(gs, expected, base, width), "clear preview matches oracle",
+                   base, fbw, operations.size());
+    }
+}
+
+void unsupported_bindings_use_host_buffer() {
+  auto memory = seed(), small = memory, large = memory;
+  small.pop_back(); large.push_back(0xA5u);
+  const auto before = memory, small_before = small, large_before = large;
+  ps2vita::Gs gs;
+  gs.set_depth_state(ps2vita::Gs::DepthTest::Always, false);
+  struct Binding { std::vector<std::uint8_t>* memory; std::uint64_t frame; };
+  const std::array<Binding, 6> bindings{{
+      {nullptr, 511u | (63ull << 16u)},
+      {&memory, 511u},
+      {&memory, 511u | (1ull << 16u) | (2ull << 24u)},
+      {&memory, 511u | (63ull << 16u) | (63ull << 24u)},
+      {&small, 511u | (1ull << 16u)},
+      {&large, 511u | (63ull << 16u)},
+  }};
+  for (const auto& binding : bindings) {
+    // Rebind from a valid target so a stale cached pointer cannot pass.
+    gs.set_color_target(&memory, 511u | (63ull << 16u));
+    gs.set_color_target(binding.memory, binding.frame);
+    gs.point({2, 3, 0u, 0xCAFEBABEu});
+    check(memory == before && small == small_before && large == large_before,
+          "unsupported point binding cannot write any supplied memory");
+    check(gs.color_frame() == binding.frame && gs.pixel(2, 3) == 0xCAFEBABEu &&
+          gs.pixels()[3 * ps2vita::Gs::kWidth + 2] == 0xCAFEBABEu,
+          "unsupported binding retains host point and preview behavior");
+    gs.clear(0xD18E274Bu);
+    check(memory == before && small == small_before && large == large_before,
+          "unsupported clear binding cannot write any supplied memory");
+    const auto* pixels = gs.pixels();
+    check(std::all_of(pixels, pixels + ps2vita::Gs::kWidth * ps2vita::Gs::kHeight,
+                      [](auto color) { return color == 0xD18E274Bu; }),
+          "unsupported binding clear fills the host buffer");
+  }
+}
+
+void valid_target_pointer_switches() {
+  auto expected_a = seed(), memory_a = expected_a;
+  auto expected_b = seed();
+  for (auto& byte : expected_b) byte ^= 0xA5u;
+  auto memory_b = expected_b;
+  ps2vita::Gs gs;
+  gs.set_depth_state(ps2vita::Gs::DepthTest::Always, false);
+  const auto draw = [&](auto& memory, auto& expected, unsigned base, unsigned fbw,
+                        unsigned format, std::uint32_t mask, std::uint32_t color,
+                        unsigned native_x, unsigned native_y) {
+    const auto frame = base | (std::uint64_t{fbw} << 16u) |
+        (std::uint64_t{format} << 24u) | (std::uint64_t{mask} << 32u);
+    const int x = static_cast<int>(native_x / kScale);
+    const int y = static_cast<int>(native_y / kScale);
+    gs.set_color_target(&memory, frame);
+    tile(expected, base, fbw * 64u, x, y, color,
+         mask | (format == 1u ? 0xFF000000u : 0u));
+    gs.point({x, y, 0u, color});
+    check(memory_a == expected_a, "valid target switch preserves every A VRAM byte");
+    check(memory_b == expected_b, "valid target switch preserves every B VRAM byte");
+    check(preview(gs, expected, base, fbw * 64u), "valid target switch preview uses bound buffer");
+  };
+  // Switch A -> B -> A, with distinct byte seeds and different base, stride,
+  // format and mask. Both A operations include the same last physical word,
+  // so the final masked write must also consume A's live destination bytes.
+  draw(memory_a, expected_a, 511u, 1u, 0u, 0u, 0xF1E2D3C4u, 63u, 31u);
+  draw(memory_b, expected_b, 0u, 63u, 0u, 0x5AA53CC3u, 0x09ABCDEFu, 255u, 260u);
+  draw(memory_a, expected_a, 511u, 10u, 1u, 0x00FF00FFu, 0x3388EE44u, 127u, 3u);
+}
+
 void wrapped_masks_and_watches() {
   auto expected = seed(), memory = expected, watched = expected;
   ps2vita::Gs gs, diagnostic;
@@ -193,7 +373,9 @@ void same_draw_feedback() {
 } // namespace
 
 int main() {
-  wrapped_masks_and_watches(); blend_reads_live_origin(); same_draw_feedback();
+  wrapped_masks_and_watches(); stride_and_wrap_matrix();
+  unsupported_bindings_use_host_buffer(); valid_target_pointer_switches();
+  blend_reads_live_origin(); same_draw_feedback();
   std::printf("gs_target_access scale=%u checks=%u failures=%u\n", kScale, checks, failures);
   return failures ? 1 : 0;
 }
