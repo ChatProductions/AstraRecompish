@@ -53,6 +53,11 @@ public:
   Memory();
 
   void clear();
+  // True only when every byte of a fetch span is backed by ordinary RAM,
+  // loaded ROM or directly addressed scratchpad, without MMIO read effects.
+  // Bounded to 4 KiB; this inspects mappings only, never guest bytes.
+  bool instruction_reads_side_effect_free(std::uint32_t address,
+                                         std::size_t size) const;
   bool valid(std::uint32_t address, std::size_t size = 1) const;
   std::uint8_t read8(std::uint32_t address) const;
   std::uint16_t read16(std::uint32_t address) const;
@@ -207,8 +212,14 @@ private:
   std::uint32_t video_cycles_remaining_ = 0;
   std::uint32_t video_field_remainder_ = 0;
   bool video_in_vblank_ = false;
+  // Only confirmed analogue PAL interlace is modeled separately. Other
+  // configurations retain the legacy NTSC cadence, not progressive accuracy.
+  bool video_pal_interlaced_ = false;
   std::uint32_t hblank_cycles_remaining_ = 0;
   std::uint32_t hblank_cycle_remainder_ = 0;
+  void update_video_timing_selection();
+  std::uint32_t next_video_phase_cycles(bool blank);
+  std::uint32_t next_hblank_cycles();
   bool timer3_target_future_ = false;
   std::uint32_t iop_cycle_remainder_ = 0;
   std::uint32_t timer5_prescale_remainder_ = 0;

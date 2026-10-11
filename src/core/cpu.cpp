@@ -98,7 +98,6 @@ void Cpu::reset(std::uint32_t entry) {
   pending_target_ = 0;
   halt_requested_ = false;
   exception_mode_ = false;
-  block_cache_.clear();
 }
 
 void Cpu::request_halt() { halt_requested_ = true; }
@@ -236,9 +235,8 @@ StopReason Cpu::memory_fault(std::uint32_t address) {
 }
 
 StopReason Cpu::run(std::uint32_t instruction_budget) {
-  // Populate and age decoded metadata at slice boundaries. Execution remains on
-  // the reference interpreter until block behavior is differential-tested.
-  (void)block_cache_.lookup(memory_, state_.pc);
+  // The interpreter does not consume decoded-block metadata. Warming it here
+  // wasted slice work and could perform nonarchitectural MMIO instruction reads.
   for (std::uint32_t i = 0; i < instruction_budget;) {
     const auto fast_instructions = try_fast_zero_fill(instruction_budget - i);
     if (fast_instructions != 0) {
@@ -264,12 +262,14 @@ std::uint32_t Cpu::try_fast_zero_fill(std::uint32_t instruction_budget) {
   //   bne   condition,zero,loop
   //   por   zero_value,zero,zero       # delay slot
   constexpr std::uint32_t kGuestInstructionsPerIteration = 7;
-  if (branch_pending_ || instruction_budget < kGuestInstructionsPerIteration ||
-      (state_.pc & 3u) != 0 || !memory_.valid(state_.pc, 28))
+  if (halt_requested_ || branch_pending_ || instruction_budget < kGuestInstructionsPerIteration ||
+      (state_.pc & 3u) != 0 ||
+      !memory_.instruction_reads_side_effect_free(state_.pc, 28))
     return 0;
 
   const std::uint32_t pc = state_.pc;
   const std::uint32_t sq = memory_.read32(pc);
+  if ((sq >> 26) != 0x1Fu || (sq & 0xFFFFu) != 0) return 0;
   const std::uint32_t addiu = memory_.read32(pc + 4u);
   const std::uint32_t sltu = memory_.read32(pc + 8u);
   const std::uint32_t nop0 = memory_.read32(pc + 12u);
@@ -277,8 +277,7 @@ std::uint32_t Cpu::try_fast_zero_fill(std::uint32_t instruction_budget) {
   const std::uint32_t bne = memory_.read32(pc + 20u);
   const std::uint32_t por = memory_.read32(pc + 24u);
 
-  if ((sq >> 26) != 0x1Fu || (sq & 0xFFFFu) != 0 ||
-      (addiu >> 26) != 0x09u || (addiu & 0xFFFFu) != 16u ||
+  if ((addiu >> 26) != 0x09u || (addiu & 0xFFFFu) != 16u ||
       (sltu >> 26) != 0 || (sltu & 63u) != 0x2Bu ||
       nop0 != 0 || nop1 != 0 || (bne >> 26) != 0x05u ||
       (bne & 0xFFFFu) != 0xFFFAu)

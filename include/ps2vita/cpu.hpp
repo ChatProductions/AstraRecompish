@@ -1,6 +1,5 @@
 #pragma once
 
-#include "ps2vita/ee_block.hpp"
 #include "ps2vita/memory.hpp"
 
 #include <array>
@@ -85,7 +84,6 @@ private:
   std::uint32_t pending_target_ = 0;
   bool halt_requested_ = false;
   bool exception_mode_ = false;
-  EeBlockCache block_cache_{};
 };
 
 const char* stop_reason_name(StopReason reason);

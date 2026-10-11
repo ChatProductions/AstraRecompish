@@ -93,7 +93,7 @@ A small guest ELF now draws into framebuffer A, samples A as a 24-bit texture
 into B, changes A, and samples it again without overwriting B's earlier result.
 This previously failed in Astra; it now passes, including texture-alpha checks.
 PCSX2 software-renderer output matches all **128 native RGB pixels** checked.
-Release and UBSan suites pass **53/53 CTest targets** each, and the Vita VPK
+Release and UBSan suites pass **56/56 CTest targets** each, and the Vita VPK
 cross-build passes. These are reference checks, not physical PS2/Vita validation.
 
 The new shared color storage is deliberately approximate: linear addressing,
@@ -207,6 +207,16 @@ was tested but discarded; overlapping host timings do not establish a new
 speedup. Texture regression suites with expanded nearest-format coverage pass
 **872/824/812 checks** on quarter/half/native grids. See the
 [sampler candidate-selection checkpoint](docs/SESSION_2026-10-11_SAMPLER_INIT.md).
+
+Whole-system dispatch now skips unused EE block decoding, removes its **100 KiB
+per-CPU cache**, and rejects non-matching zero-fill loops before fetching six
+extra words. Owned tests also fix speculative MMIO fetches and halted native
+stores. A 300M-cycle comparison preserves checked CPU/RAM/IOP/VU/graphics digests;
+single-pair host timings are provisional, not a Vita FPS claim. The PAL BIOS now
+selects rational **50-field/s** video and HBlank deadlines from CMOD/SYNCV,
+preserving pending edges on mode changes. Other unsupported modes retain an
+explicit legacy fallback. See the
+[dispatch and PAL timing checkpoint](docs/SESSION_2026-10-11_SYSTEM_DISPATCH_PAL.md).
 
 The Vita GS view now uses the buffer selected by PMODE/DISPFB and bounds its
 samples using the selected DISPLAY's requested source extent. The NTSC/PAL

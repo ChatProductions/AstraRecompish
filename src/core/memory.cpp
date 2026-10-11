@@ -7,9 +7,11 @@
 namespace ps2vita {
 
 namespace {
-// The BIOS configures NTSC interlace. These integer deadlines follow the
-// 294.912 MHz EE clock at 59.94 fields/s and PCSX2's measured 22.5-scanline
-// VBlank interval. A rational remainder corrects the fractional field cycle.
+// Preserve the existing reset/unsupported-mode NTSC cadence. Confirmed
+// analogue PAL interlace additionally follows the 294.912 MHz EE clock,
+// 50 fields/s, 625 scanlines/frame and a 24.5-scanline VBlank interval.
+// Primary reference: PCSX2 v2.8.2 Counters.cpp, vSyncInfoCalc and
+// IsProgressiveVideoMode. This does not model progressive or digital modes.
 constexpr std::uint32_t kNtscRenderCycles = 4498396u;
 constexpr std::uint32_t kNtscVblankCycles = 421724u;
 constexpr std::uint32_t kNtscFieldRemainder = 360u;
@@ -17,6 +19,16 @@ constexpr std::uint32_t kNtscFieldDivisor = 2997u;
 constexpr std::uint32_t kNtscScanlineCycles = 18743u;
 constexpr std::uint32_t kNtscScanlineRemainder = 495225u;
 constexpr std::uint32_t kNtscScanlineDivisor = 1573425u;
+// Exact rational PAL durations: field 5,898,240 cycles; scanline
+// 18,874+46/125; blank 462,422+2/125; render 5,435,817+123/125.
+// Carry the phase fractions jointly so a complete field has no integer drift.
+constexpr std::uint32_t kPalRenderCycles = 5435817u;
+constexpr std::uint32_t kPalRenderRemainder = 123u;
+constexpr std::uint32_t kPalVblankCycles = 462422u;
+constexpr std::uint32_t kPalVblankRemainder = 2u;
+constexpr std::uint32_t kPalScanlineCycles = 18874u;
+constexpr std::uint32_t kPalScanlineRemainder = 46u;
+constexpr std::uint32_t kPalDivisor = 125u;
 } // namespace
 
 Memory::Memory()
@@ -142,6 +154,7 @@ void Memory::clear() {
   video_cycles_remaining_ = kNtscRenderCycles;
   video_field_remainder_ = 0;
   video_in_vblank_ = false;
+  video_pal_interlaced_ = false;
   hblank_cycles_remaining_ = kNtscScanlineCycles;
   hblank_cycle_remainder_ = 0;
   timer3_target_future_ = false;
@@ -175,6 +188,31 @@ std::uint32_t Memory::page_generation(std::uint32_t address) const {
   if (p < kRamSize)
     return ram_page_generation_[p >> 12] ^ mapping_generation_;
   return mapping_generation_;
+}
+
+bool Memory::instruction_reads_side_effect_free(std::uint32_t address,
+                                               std::size_t size) const {
+  if (size == 0u || size > 0x1000u || size - 1u > 0xFFFFFFFFu - address ||
+      address >= kEeInternalBase ||
+      (address >= kDevBoardBase && address < kDevBoardBase + kDevBoardSize))
+    return false;
+  const auto p = physical(address);
+  const bool ram = p < kRamSize && size <= kRamSize - p;
+  const bool bios = bios_loaded_ && p >= kBiosBase &&
+      p < kBiosBase + kBiosSize && size <= kBiosBase + kBiosSize - p;
+  const bool scratch = address >= kScratchBase &&
+      address < kScratchBase + kScratchSize &&
+      size <= kScratchBase + kScratchSize - address &&
+      p >= kScratchBase && p < kScratchBase + kScratchSize &&
+      size <= kScratchBase + kScratchSize - p;
+  if (!ram && !bios && !scratch) return false;
+  // TLB pages are at least 4 KiB. Only a page-crossing span needs a second
+  // translation; require continuous backing rather than guessing at it.
+  if (size > 0x1000u - (address & 0xFFFu)) {
+    const auto last = address + static_cast<std::uint32_t>(size - 1u);
+    return physical(last) == p + size - 1u;
+  }
+  return true;
 }
 
 bool Memory::valid(std::uint32_t address, std::size_t size) const {
@@ -361,8 +399,13 @@ void Memory::write8(std::uint32_t address, std::uint8_t value) {
   }
   else if (p >= kVuBase && p < kVuBase + kVuSize)
     vu_mem_[p - kVuBase] = value;
-  else if (p >= kGsHwBase && p < kGsHwBase + kGsHwSize)
-    gs_hw_[p - kGsHwBase] = value;
+  else if (p >= kGsHwBase && p < kGsHwBase + kGsHwSize) {
+    const auto offset = p - kGsHwBase;
+    gs_hw_[offset] = value;
+    // Wider accessors use this byte route too. These are the only bytes
+    // containing the selection bits; reserved/SMODE2 writes do not retime.
+    if (offset == 0x11u || offset == 0x60u) update_video_timing_selection();
+  }
   else if (p >= kDveBase && p < kDveBase + kDveSize)
     dve_[p - kDveBase] = value;
   else if (p >= kCdvdBase && p < kCdvdBase + kCdvdSize)
@@ -480,6 +523,50 @@ void Memory::write32(std::uint32_t address, std::uint32_t value) {
 void Memory::write64(std::uint32_t address, std::uint64_t value) {
   write32(address, static_cast<std::uint32_t>(value));
   write32(address + 4, static_cast<std::uint32_t>(value >> 32));
+}
+
+void Memory::update_video_timing_selection() {
+  const unsigned cmod = (gs_hw_[0x11u] >> 5u) & 3u;
+  const bool pal = cmod == 3u && (gs_hw_[0x60u] & 1u) != 0u;
+  if (pal == video_pal_interlaced_) return;
+  video_pal_interlaced_ = pal;
+  video_field_remainder_ = 0u;
+  hblank_cycle_remainder_ = 0u;
+  // Preserve already pending absolute video/scanline deadlines and phase.
+  // The new cadence starts at the next edge, not at the mode-write cycle.
+  // PCSX2 v2.8.2 UpdateVSyncRate preserves the pending deadline by adjusting
+  // startCycle by oldDelta-newDelta; this countdown model needs no adjustment.
+}
+
+std::uint32_t Memory::next_video_phase_cycles(bool blank) {
+  if (video_pal_interlaced_) {
+    auto duration = blank ? kPalVblankCycles : kPalRenderCycles;
+    video_field_remainder_ += blank ? kPalVblankRemainder : kPalRenderRemainder;
+    if (video_field_remainder_ >= kPalDivisor) {
+      video_field_remainder_ -= kPalDivisor;
+      ++duration;
+    }
+    return duration;
+  }
+  if (blank) return kNtscVblankCycles;
+  auto duration = kNtscRenderCycles;
+  video_field_remainder_ += kNtscFieldRemainder;
+  if (video_field_remainder_ >= kNtscFieldDivisor) {
+    video_field_remainder_ -= kNtscFieldDivisor;
+    ++duration;
+  }
+  return duration;
+}
+
+std::uint32_t Memory::next_hblank_cycles() {
+  auto duration = video_pal_interlaced_ ? kPalScanlineCycles : kNtscScanlineCycles;
+  hblank_cycle_remainder_ += video_pal_interlaced_ ? kPalScanlineRemainder : kNtscScanlineRemainder;
+  const auto divisor = video_pal_interlaced_ ? kPalDivisor : kNtscScanlineDivisor;
+  if (hblank_cycle_remainder_ >= divisor) {
+    hblank_cycle_remainder_ -= divisor;
+    ++duration;
+  }
+  return duration;
 }
 
 std::uint32_t Memory::cycles_until_next_event() const {
@@ -714,17 +801,12 @@ void Memory::advance(std::uint32_t cycles) {
     iop_hw_[offset + 3] = static_cast<std::uint8_t>(value >> 24);
   };
 
-  // HBlank is Timer 3's external clock source. Preserve the fractional NTSC
+  // HBlank is Timer 3's external clock source. Preserve the selected rational
   // scanline phase so counter reads remain deterministic over long runs.
   auto hblank_cycles = cycles;
   while (hblank_cycles >= hblank_cycles_remaining_) {
     hblank_cycles -= hblank_cycles_remaining_;
-    hblank_cycles_remaining_ = kNtscScanlineCycles;
-    hblank_cycle_remainder_ += kNtscScanlineRemainder;
-    if (hblank_cycle_remainder_ >= kNtscScanlineDivisor) {
-      hblank_cycle_remainder_ -= kNtscScanlineDivisor;
-      ++hblank_cycles_remaining_;
-    }
+    hblank_cycles_remaining_ = next_hblank_cycles();
 
     auto mode = raw_ee(0x1810u);
     if ((mode & 0x83u) == 0x83u && (mode & 0x04u) == 0u) {
@@ -764,17 +846,12 @@ void Memory::advance(std::uint32_t cycles) {
     video_cycles -= video_cycles_remaining_;
     if (!video_in_vblank_) {
       video_in_vblank_ = true;
-      video_cycles_remaining_ = kNtscVblankCycles;
+      video_cycles_remaining_ = next_video_phase_cycles(true);
       store_ee(0xF000u, raw_ee(0xF000u) | (1u << 2));
       store_iop(0x0070u, raw_iop(0x0070u) | (1u << 0));
     } else {
       video_in_vblank_ = false;
-      video_cycles_remaining_ = kNtscRenderCycles;
-      video_field_remainder_ += kNtscFieldRemainder;
-      if (video_field_remainder_ >= kNtscFieldDivisor) {
-        video_field_remainder_ -= kNtscFieldDivisor;
-        ++video_cycles_remaining_;
-      }
+      video_cycles_remaining_ = next_video_phase_cycles(false);
       store_ee(0xF000u, raw_ee(0xF000u) | (1u << 3));
       store_iop(0x0070u, raw_iop(0x0070u) | (1u << 11));
     }
