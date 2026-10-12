@@ -194,3 +194,24 @@ slices until 1.4B, then single-cycle slices to locate the first failed command,
 with a 1.7B cap. This records source-span/context evidence instead of assuming
 that later black output needs more VU pairs. No unsupported instruction or
 streaming fix should be guessed before that context is available.
+
+## Deferred idle-loop acceleration audit — not implemented
+
+The existing local EE RAM contains an eight-instruction idle loop at 00081FC0:
+six NOPs, an unconditional branch back, and a NOP delay slot. The logged IOP
+loop at 0000AE94 is a self-jump with NOP delay slot; the following syscall
+helper is outside that loop. Fingerprinted EE batching **within the existing
+eight-cycle boundary** is a plausible next work reduction, not a measured gain.
+
+Any such path must preserve halt/interrupt checks, Count, PC, pending branches,
+zero-register handling, code fingerprints and tracing/census behavior. IRQ
+source reads currently go through EE virtual translation: remapping those
+addresses to polling-sensitive MMIO makes blindly removing reads unsafe.
+
+Larger joint EE/IOP skipping is explicitly deferred. Timer 5 target/reset/repeat
+pulse transitions are not arbitrarily chunk-equivalent: count=0/target=3 over
+four IOP ticks leaves a different interrupt latch in one bulk advance than
+four single ticks. It would need exact target/overflow and all DMA/video
+horizons, pending branches/loads, independent IOP phase residues, completed
+graphics visibility and SPU2 handling, plus continuation oracles. No scheduler
+cap, interrupt semantics or idle-loop execution is changed in this checkpoint.

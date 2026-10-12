@@ -104,9 +104,11 @@ bool Vif1::submit(const std::uint8_t* data, std::size_t size) {
     const auto command = static_cast<std::uint8_t>(code >> 24);
     const auto opcode = command & 0x7Fu;
     if (command_census_) ++command_counts_[opcode];
-    if (opcode == 0x50u) { // DIRECT, immediate is QWC; zero means 65536.
+    if (opcode == 0x50u || opcode == 0x51u) { // DIRECT / DIRECTHL: QWC, zero = 65536.
       // Preserve functional command order with previously emitted PATH1.
-      // GIF arbitration/backpressure and DIRECTHL priority remain unmodeled.
+      // Both commands forward the same payload length in this coarse model.
+      // GIF arbitration/backpressure and DIRECTHL priority remain unmodeled;
+      // this adds no cycles, delays, or new path scheduling semantics.
       std::vector<std::uint8_t> packet;
       while (vu1_.pop_path1_packet(packet)) gif_packets_.push_back(std::move(packet));
       const auto qwc = code & 0xFFFFu;

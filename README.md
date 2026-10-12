@@ -229,9 +229,13 @@ work reductions, not a measured Vita FPS gain. See the
 
 A fresh PAL boot now reaches **3 billion modeled EE cycles**. Live captures
 show the cloud/light sequence advancing beyond the title; guest control flow
-then exits the animation thread normally. Later output remains black with nine
-new VIF packet rejections, so complete visual intro/menu correctness is still
-unverified. A local held-checkpoint video records both the progress and this
+then exits the animation thread normally. That run found nine later VIF packet
+rejections; their first command was missing **DIRECTHL** support. The payload
+handler now accepts it, with **zero VIF rejections through a fresh 1.7B boot**
+and all nine commands counted. Later previews remain black, so complete visual
+intro/menu correctness is still unverified. DIRECTHL priority/backpressure is
+not yet modeled. See the [DIRECTHL fix and tests](docs/SESSION_2026-10-12_DIRECTHL.md).
+A local held-checkpoint video records the earlier progress and its
 limit; it is not real-time Vita FPS or a replay of the unrecorded later stream.
 See the [longer boot and video notes](docs/SESSION_2026-10-11_QUEUE_PRESCALER.md#finished-three-billion-cycle-run-and-later-rendering-boundary).
 
