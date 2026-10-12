@@ -85,8 +85,14 @@ termination. The 1.6B previews are visually inspected and black; selected
 1.6B/1.7B PPMs have identical SHA-256
 `64fb49a2d2e06cc138056ba6fab5a33d564b3ac1aacd2a41d6d14ddaff31f4c2`.
 Thus the missing opcode is demonstrably fixed, **not** the complete later
-rendering or menu. The sprite plateau warrants inspecting actual GIF payloads
-and buffering next, rather than inventing more VU work or transport delays.
+rendering or menu. A matched-cycle comparison matters: the earlier unpatched
+run also has 3,955 sprites at 1.7B and through 1.8B; its sprite count first
+increases again by 1.9B. At 1.7B its 106,457 GIF submissions become 106,466 here,
+exactly the nine accepted DIRECTHL transfers, with matching triangle/sprite,
+EE PC and IOP PC totals. The old 3B sprite total is not a 1.7B oracle. The present
+plateau is **not evidence of a new graphics regression**. Next inspect actual
+GIF payloads/buffering and continue to matched later checkpoints, rather than
+inventing more VU work or transport delays.
 
 Local diagnostic: `build-release/vif-first-reject-directhl-2026-10-12/`.
 Its frozen executable SHA-256 is
