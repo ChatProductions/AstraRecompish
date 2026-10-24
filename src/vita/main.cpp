@@ -59,7 +59,7 @@ void truncate_report(const char* path) {
 }
 
 void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) {
-  char report[768];
+  char report[1024];
   const auto& cpu = emulator.cpu();
   const auto& memory = emulator.memory();
   const auto& state = cpu.state();
@@ -69,6 +69,7 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
   std::snprintf(report, sizeof(report),
       "reason=%s\npc=%08X\nopcode=%08X\ncycles=%llu\n"
       "v0=%016llX\na0=%016llX\nsp=%016llX\nra=%016llX\n"
+      "v1=%016llX\na1=%016llX\na2=%016llX\na3=%016llX\nt0=%016llX\n"
       "status=%08X\ncause=%08X\nepc=%08X\nbadvaddr=%08X\n"
       "epc_opcode=%08X\nvector180=%08X,%08X,%08X,%08X\n"
       "vector200=%08X,%08X,%08X,%08X\n",
@@ -78,6 +79,11 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
       static_cast<unsigned long long>(state.gpr[4]),
       static_cast<unsigned long long>(state.gpr[29]),
       static_cast<unsigned long long>(state.gpr[31]),
+      static_cast<unsigned long long>(state.gpr[3]),
+      static_cast<unsigned long long>(state.gpr[5]),
+      static_cast<unsigned long long>(state.gpr[6]),
+      static_cast<unsigned long long>(state.gpr[7]),
+      static_cast<unsigned long long>(state.gpr[8]),
       state.cop0[12], state.cop0[13], state.cop0[14], state.cop0[8],
       read_debug(state.cop0[14]),
       read_debug(0x80000180u), read_debug(0x80000184u),
@@ -386,6 +392,9 @@ int main() {
         std::snprintf(message, sizeof(message), "COULD NOT READ ANY ELF");
       } else {
         const auto result = emulator.load_elf(image.data(), image.size());
+        // Startup kernel HLE is deliberately scoped to a user-supplied ELF.
+        // Built-in diagnostics and real BIOS boot still run without it.
+        emulator.enable_bare_elf_startup_syscalls(result.ok && loaded_external);
         reset_progress();
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
         if (result.ok && loaded_external) {

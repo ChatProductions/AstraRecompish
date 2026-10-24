@@ -18,6 +18,11 @@ public:
   bool load_bios(const void* data, std::size_t size);
   bool boot_bios();
   StopReason run_slice(std::uint32_t instructions);
+  // Minimal PS2 kernel startup services for an explicitly loaded bare ELF.
+  // Opt-in; never intercept BIOS exception handling or other syscalls.
+  void enable_bare_elf_startup_syscalls(bool enabled) {
+    bare_elf_startup_syscalls_ = enabled;
+  }
   void service_graphics();
   void reset();
 
@@ -47,6 +52,7 @@ public:
   bool ready() const { return ready_; }
 
 private:
+  bool handle_bare_elf_startup_syscall();
   Memory memory_;
   Cpu cpu_;
   IopCpu iop_;
@@ -56,6 +62,10 @@ private:
   ElfLoadResult image_{};
   std::uint32_t ee_cycles_until_iop_ = 8u;
   bool ready_ = false;
+  bool bare_elf_startup_syscalls_ = false;
+  std::uint32_t startup_stack_top_ = 0;
+  std::uint32_t startup_heap_base_ = 0;
+  std::uint32_t startup_heap_end_ = 0;
 };
 
 } // namespace ps2vita

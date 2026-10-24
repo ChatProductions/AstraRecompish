@@ -26,6 +26,8 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   // Native title code is never inherited by the next ELF accidentally.
   cpu_.set_startup_aot_package(nullptr);
   ee_cycles_until_iop_ = 8u;
+  bare_elf_startup_syscalls_ = false;
+  startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   ready_ = image_.ok;
   if (ready_) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
   return image_;
@@ -44,6 +46,8 @@ bool Emulator::boot_bios() {
   cpu_.reset(0xBFC00000u);
   iop_.reset();
   ee_cycles_until_iop_ = 8u;
+  bare_elf_startup_syscalls_ = false;
+  startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   gif_.reset();
   vif1_.reset();
   set_bios_reset_state(cpu_.state());
@@ -76,10 +80,50 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
     // before EE polling code observes completion and reads VU memory. A fixed
     // host quantum alone can delay this visibility by several instructions.
     service_graphics();
+    if (result == StopReason::Syscall && image_.ok &&
+        bare_elf_startup_syscalls_ && handle_bare_elf_startup_syscall()) {
+      // The syscall was already counted by Cpu::step; continue with the
+      // remaining guest-instruction budget, without counting it twice.
+      continue;
+    }
     if (result != StopReason::StepLimit) return result;
     if (executed == 0u) return StopReason::Halted;
   }
   return StopReason::StepLimit;
+}
+
+bool Emulator::handle_bare_elf_startup_syscall() {
+  auto& state = cpu_.state();
+  const auto number = static_cast<std::uint32_t>(state.gpr[3]); // $v1
+  const auto arg0 = static_cast<std::uint32_t>(state.gpr[4]);
+  const auto arg1 = static_cast<std::uint32_t>(state.gpr[5]);
+  const auto arg2 = static_cast<std::uint32_t>(state.gpr[6]);
+  switch (number) {
+  case 0x3Cu: { // SetupThread(gp, stack_base, stack_size, args, root_func)
+    // In the common explicit-stack form, the kernel returns stack+size.
+    // Refuse sentinel/invalid ranges rather than invent a kernel layout.
+    const std::uint64_t top = std::uint64_t{arg1} + arg2;
+    if (arg1 == 0xFFFFFFFFu || arg2 == 0u || top > Memory::kRamSize ||
+        (top & 15u) != 0u || !memory_.valid(arg1, arg2)) return false;
+    if (!cpu_.retire_trapped_syscall(top)) return false;
+    startup_stack_top_ = static_cast<std::uint32_t>(top);
+    return true;
+  }
+  case 0x3Du: { // SetupHeap(heap_base, heap_size)
+    // SDKs use -1 to request the remainder of the main thread's stack
+    // boundary. Do not treat an arbitrary huge value as a valid allocation.
+    const std::uint64_t end = arg1 == 0xFFFFFFFFu
+        ? startup_stack_top_ : std::uint64_t{arg0} + arg1;
+    if (end == 0u || end > Memory::kRamSize || arg0 >= end ||
+        !memory_.valid(arg0, static_cast<std::size_t>(end - arg0))) return false;
+    if (!cpu_.retire_trapped_syscall(end)) return false;
+    startup_heap_base_ = arg0;
+    startup_heap_end_ = static_cast<std::uint32_t>(end);
+    return true;
+  }
+  default:
+    return false; // Unknown kernel calls must remain visible in fault.txt.
+  }
 }
 
 void Emulator::service_graphics() {
@@ -97,6 +141,7 @@ void Emulator::service_graphics() {
 
 void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
+  startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   gif_.reset();
   vif1_.reset();
   if (image_.ok) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }

@@ -104,6 +104,18 @@ void Cpu::reset(std::uint32_t entry) {
 
 void Cpu::request_halt() { halt_requested_ = true; }
 
+bool Cpu::retire_trapped_syscall(std::uint64_t return_value, bool write_return) {
+  if (stop_reason_ != StopReason::Syscall || branch_pending_ ||
+      !memory_.valid(state_.pc, 4) ||
+      (memory_.read32(state_.pc) & 0x3Fu) != 0x0Cu ||
+      (memory_.read32(state_.pc) >> 26) != 0u) return false;
+  if (write_return) state_.gpr[2] = return_value;
+  state_.pc += 4u;
+  fault_instruction_ = 0;
+  stop_reason_ = StopReason::None;
+  return true;
+}
+
 bool Cpu::set_startup_aot_package(const AotPackage* package) {
   if (package != nullptr && !validate_aot_package(*package).ok())
     return false;

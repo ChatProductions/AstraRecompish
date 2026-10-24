@@ -56,6 +56,11 @@ public:
   void reset(std::uint32_t entry);
   StopReason step();
   StopReason run(std::uint32_t instruction_budget);
+  // Complete a syscall that was deliberately trapped in bare-ELF mode.
+  // The instruction's cycle has already been charged by step(). This only
+  // advances PC and applies the kernel's return value, without a second step.
+  // Delay-slot syscalls are left stopped until their branch can be preserved.
+  bool retire_trapped_syscall(std::uint64_t return_value, bool write_return = true);
   // Opt-in first-block acceleration for a separately built title package.
   // Ordinary BIOS and emulator runs remain interpreter-only by default.
   bool set_startup_aot_package(const AotPackage* package);
