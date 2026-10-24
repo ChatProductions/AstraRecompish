@@ -5,6 +5,11 @@
 namespace ps2vita {
 namespace {
 
+// Synthetic EE syscall table in KSEG0 RAM, below the bare-ELF load area.
+// Games can discover the registered handlers by scanning kernel memory.
+constexpr std::uint32_t kBareElfSyscallTable = 0x80010000u;
+constexpr std::uint32_t kBareElfSyscallSlots = 0x130u;
+
 void set_bios_reset_state(CpuState& state) {
   state.cop0[12] = 0x70400004u; // CU0/1/2 + BEV + reset-time ERL.
   state.cop0[16] = 0x00000440u; // R5900 Config reset value.
@@ -29,7 +34,6 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
-  guest_syscall_handlers_ = {};
   guest_syscall_returns_ = {};
   guest_syscall_depth_ = 0u;
   ready_ = image_.ok;
@@ -53,7 +57,6 @@ bool Emulator::boot_bios() {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
-  guest_syscall_handlers_ = {};
   guest_syscall_returns_ = {};
   guest_syscall_depth_ = 0u;
   gif_.reset();
@@ -118,10 +121,10 @@ bool Emulator::handle_bare_elf_startup_syscall() {
   const auto arg2 = static_cast<std::uint32_t>(state.gpr[6]);
   // User-installed SetSyscall handlers take precedence over built-in EE
   // services, as they do when the BIOS dispatch table has been patched.
-  if (number < guest_syscall_handlers_.size() &&
-      guest_syscall_handlers_[number] != 0u) {
+  const auto handler = number < kBareElfSyscallSlots
+      ? memory_.read32(kBareElfSyscallTable + number * 4u) : 0u;
+  if (handler != 0u) {
     if (guest_syscall_depth_ == guest_syscall_returns_.size()) return false;
-    const auto handler = guest_syscall_handlers_[number];
     if (!memory_.instruction_reads_side_effect_free(handler, 4u)) return false;
     const auto continuation = state.pc + 4u;
     const auto saved_ra = state.gpr[31];
@@ -133,12 +136,14 @@ bool Emulator::handle_bare_elf_startup_syscall() {
   }
   switch (number) {
   case 0x74u: { // SetSyscall(number, guest_handler); returns void.
-    if (arg0 >= guest_syscall_handlers_.size() ||
+    if (arg0 >= kBareElfSyscallSlots ||
         (arg1 != 0u && ((arg1 & 3u) != 0u ||
          !memory_.instruction_reads_side_effect_free(arg1, 4u))))
       return false;
     if (!cpu_.retire_trapped_syscall(0u, false)) return false;
-    guest_syscall_handlers_[arg0] = arg1;
+    // The game scans KSEG0 for the two registered function pointers,
+    // 0xA4 bytes apart (0x83 - 0x5A syscall slots).
+    memory_.write32(kBareElfSyscallTable + arg0 * 4u, arg1);
     return true;
   }
   case 0x3Cu: { // SetupThread(gp, stack_base, stack_size, args, root_func)
@@ -237,7 +242,9 @@ void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
-  guest_syscall_handlers_ = {};
+  // Reset does not zero all EE RAM; explicitly remove old kernel hooks.
+  for (std::uint32_t i = 0; i < kBareElfSyscallSlots; ++i)
+    memory_.write32(kBareElfSyscallTable + i * 4u, 0u);
   guest_syscall_returns_ = {};
   guest_syscall_depth_ = 0u;
   gif_.reset();
