@@ -202,6 +202,38 @@ int main() {
               kernel_state.pc == 0x1004u &&
               kernel_state.gpr[2] == 0x12345u,
           "SetSyscall registers guest code without clobbering a void return");
+
+  // Model a second registered syscall, then perform the exact class of
+  // KSEG0 pointer search used by startup code. A host-only C++ registry
+  // cannot satisfy this test: the pointers must live in guest EE RAM.
+  emulator.memory().write32(0x1180u, 0x03E00008u); // jr ra
+  emulator.memory().write32(0x1184u, 0u);          // delay slot
+  kernel_state.gpr[5] = 0x1180u;
+  require(invoke_kernel(0x74u, 0x5Au) == ps2vita::StopReason::StepLimit,
+          "second guest syscall registration succeeds");
+  const auto find_handler = [&](std::uint32_t target) {
+    for (std::uint32_t addr = 0x80000000u; addr < 0x80080000u; addr += 4u) {
+      if (emulator.memory().read32(addr) == target) return addr;
+    }
+    return std::uint32_t{0};
+  };
+  const auto location_83 = find_handler(0x1100u);
+  const auto location_5a = find_handler(0x1180u);
+  require(location_83 != 0u && location_5a != 0u &&
+              location_83 - 0x83u * 4u == location_5a - 0x5Au * 4u &&
+              location_83 - location_5a == 0xA4u,
+          "both registered handlers are discoverable with syscall-table spacing");
+  // Direct guest table patches must also affect dispatch.
+  emulator.memory().write32(location_83, 0x1180u);
+  kernel_state.gpr[31] = 0x4444u;
+  require(invoke_kernel(0x83u, 0u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1180u,
+          "guest memory writes change the registered syscall target");
+  require(emulator.run_slice(2u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1004u &&
+              kernel_state.gpr[31] == 0x4444u,
+          "guest-patched syscall handler returns normally");
+  emulator.memory().write32(location_83, 0x1100u);
   kernel_state.gpr[31] = 0x2220u;
   require(invoke_kernel(0x83u, 0u) == ps2vita::StopReason::StepLimit &&
               kernel_state.pc == 0x1100u &&
@@ -224,6 +256,9 @@ int main() {
   kernel_state.gpr[5] = 0x1100u;
   require(invoke_kernel(0x83u, 0u) == ps2vita::StopReason::Syscall,
           "reset also removes guest syscall table registrations");
+  require(emulator.memory().read32(location_83) == 0u &&
+              emulator.memory().read32(location_5a) == 0u,
+          "reset also clears guest-visible syscall table pointers");
   require(invoke_kernel(0x74u, 0x130u) == ps2vita::StopReason::Syscall &&
               kernel_state.pc == 0x1000u,
           "out-of-range SetSyscall requests are not silently accepted");
