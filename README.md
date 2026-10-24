@@ -58,8 +58,10 @@ JAL/delay-slot/`jr $ra` sequence.
 
 A generated synthetic PS2 workload now exercises integer ALU, 64-bit math, MMI,
 loads/stores, branches, calls/returns, memcpy-style loops, and multiply-heavy
-matrix work. The Vita app compares it against the interpreter, records the median
-of five samples in `benchmark.txt`, and shows `AOT PERF: PASS` when state agrees.
+matrix work. On the Vita, press **L** from the monitor while paused to run a
+short optional interpreter-vs-AOT comparison. It records the median of three
+samples in `benchmark.txt` and shows `AOT PERF: PASS` when state agrees.
+The benchmark no longer blocks the first screen from appearing.
 Vita3K is the first correctness gate; only a physical Vita result is a meaningful
 performance decision.
 
@@ -510,11 +512,13 @@ workflow.
 ## First hardware test
 
 1. Install `ps2vita.vpk` using VitaShell on a homebrew-enabled Vita.
-2. Launch AstraRecomp. The built-in Phase-0 probe runs automatically. A correct
-   build shows `PS2R AOT T0: PASS`, `PS2R AOT T1 CALL/RET: PASS`, and
-   `AOT PERF: PASS`.
-3. Vita3K validates correctness only. Copy
-   `ux0:data/ps2vita/benchmark.txt`; do not use its speedup as a hardware result.
+2. Launch AstraRecomp. The two quick Phase-0 probes run automatically.
+   A correct build shows `PS2R AOT T0: PASS` and
+   `PS2R AOT T1 CALL/RET: PASS`. Performance testing is deferred until you
+   press **L** while paused. The first screen should appear without it.
+3. After the smoke test, you can optionally press L for the shorter benchmark.
+   Vita3K validates correctness only. Copy `ux0:data/ps2vita/benchmark.txt`
+   after the test; do not use its speedup as a hardware result.
 4. Press Cross to run the interpreter/bootstrap path. Its built-in test stops on
    `break` and shows `V0: 0000002A`.
 5. To test the external loader too, generate the same program on the computer:
@@ -529,8 +533,9 @@ workflow.
    emulated address `0x2000` (the write is covered by the host tests).
 
 Controls: Triangle reloads an ELF, Circle loads `ux0:data/ps2vita/bios.bin`, Cross
-runs/pauses, Square single-steps, R toggles the GS diagnostic, and L within that
-view switches selected DISPFB / active draw target. Start resets; Select exits.
+runs/pauses, Square single-steps, R toggles the GS diagnostic, and L while
+paused runs the optional performance benchmark. L within the GS view switches
+selected DISPFB / active draw target. Start resets; Select exits.
 
 If a correctly sized `bios.bin` is present, PS2Vita discovers and maps it at
 startup and begins executing it automatically. Emulator stops write
