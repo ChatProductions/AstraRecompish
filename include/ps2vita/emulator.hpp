@@ -76,9 +76,8 @@ private:
     std::int32_t maximum = 0;
   };
   std::array<KernelSemaphore, 64> kernel_semaphores_{};
-  // SetSyscall installs guest EE code addresses into the kernel table.
-  // A bounded return stack preserves the original RA across guest callbacks.
-  std::array<std::uint32_t, 0x130> guest_syscall_handlers_{};
+  // SetSyscall entries live in guest-visible EE kernel RAM.
+  // A bounded return stack preserves RA across guest callbacks.
   struct GuestSyscallReturn {
     std::uint32_t continuation = 0;
     std::uint64_t original_ra = 0;
