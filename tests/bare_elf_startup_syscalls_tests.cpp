@@ -132,6 +132,62 @@ int main() {
               emulator.cpu().state().pc == 0x1000u,
           "other kernel services are not silently skipped");
 
+
+  // Bare-ELF kernel semaphores: use the PS2 ee_sema_t field layout.
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  constexpr std::uint32_t descriptor = 0x1800u;
+  emulator.memory().write32(descriptor, 0u);       // count
+  emulator.memory().write32(descriptor + 4u, 2u);  // max_count
+  emulator.memory().write32(descriptor + 8u, 1u);  // init_count
+  emulator.memory().write32(descriptor + 12u, 0u); // wait_threads
+  emulator.memory().write32(descriptor + 16u, 0u); // attr
+  emulator.memory().write32(descriptor + 20u, 0u); // option
+  auto& kernel_state = emulator.cpu().state();
+  auto invoke_kernel = [&](std::uint32_t number, std::uint32_t argument) {
+    kernel_state.pc = 0x1000u; // The fixture's first instruction is SYSCALL.
+    kernel_state.gpr[3] = number;
+    kernel_state.gpr[4] = argument;
+    return emulator.run_slice(1u);
+  };
+  require(invoke_kernel(0x40u, descriptor) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1004u && kernel_state.gpr[2] != 0u,
+          "CreateSema reads descriptor and returns a live object ID");
+  const auto sema_id = static_cast<std::uint32_t>(kernel_state.gpr[2]);
+  require(invoke_kernel(0x45u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "PollSema consumes the initial semaphore count");
+  require(invoke_kernel(0x45u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "PollSema on empty semaphore fails without blocking");
+  const auto before_wait = kernel_state.cycles;
+  require(invoke_kernel(0x44u, sema_id) == ps2vita::StopReason::Syscall &&
+              kernel_state.pc == 0x1000u &&
+              kernel_state.cycles == before_wait + 1u,
+          "unsatisfied WaitSema stays a visible stop without a scheduler");
+  require(invoke_kernel(0x42u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "SignalSema increases the available count");
+  require(invoke_kernel(0x44u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "WaitSema consumes a signaled semaphore");
+  require(invoke_kernel(0x41u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "DeleteSema releases its allocated object");
+  require(invoke_kernel(0x42u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "deleted semaphore IDs cannot be signaled");
+
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  require(invoke_kernel(0x45u, sema_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "emulator reset discards all kernel semaphore IDs");
+  require(invoke_kernel(0x40u, ps2vita::Memory::kRamSize - 8u) ==
+              ps2vita::StopReason::Syscall &&
+              kernel_state.pc == 0x1000u,
+          "invalid pointer to CreateSema is not blindly dereferenced");
+
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
 }

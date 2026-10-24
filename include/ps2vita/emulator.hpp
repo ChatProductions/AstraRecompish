@@ -7,7 +7,9 @@
 #include "ps2vita/iop_cpu.hpp"
 #include "ps2vita/vif.hpp"
 
+#include <array>
 #include <cstddef>
+#include <cstdint>
 
 namespace ps2vita {
 
@@ -66,6 +68,14 @@ private:
   std::uint32_t startup_stack_top_ = 0;
   std::uint32_t startup_heap_base_ = 0;
   std::uint32_t startup_heap_end_ = 0;
+  // Bounded EE kernel subset for one active bare-ELF thread.
+  // An unsatisfied WaitSema must remain a visible stop until scheduling exists.
+  struct KernelSemaphore {
+    bool in_use = false;
+    std::int32_t count = 0;
+    std::int32_t maximum = 0;
+  };
+  std::array<KernelSemaphore, 64> kernel_semaphores_{};
 };
 
 } // namespace ps2vita

@@ -28,6 +28,7 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  kernel_semaphores_ = {};
   ready_ = image_.ok;
   if (ready_) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
   return image_;
@@ -48,6 +49,7 @@ bool Emulator::boot_bios() {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  kernel_semaphores_ = {};
   gif_.reset();
   vif1_.reset();
   set_bios_reset_state(cpu_.state());
@@ -121,6 +123,53 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     startup_heap_end_ = static_cast<std::uint32_t>(end);
     return true;
   }
+  case 0x40u: { // CreateSema(ee_sema_t *): six little-endian 32-bit fields.
+    // Input layout: count, max_count, init_count, wait_threads, attr, option.
+    constexpr std::size_t kDescriptorBytes = 24u;
+    if ((arg0 & 3u) != 0u || !memory_.valid(arg0, kDescriptorBytes))
+      return false;
+    const auto maximum = static_cast<std::int32_t>(memory_.read32(arg0 + 4u));
+    const auto initial = static_cast<std::int32_t>(memory_.read32(arg0 + 8u));
+    if (maximum <= 0 || initial < 0 || initial > maximum) return false;
+    for (std::size_t i = 0; i < kernel_semaphores_.size(); ++i) {
+      if (kernel_semaphores_[i].in_use) continue;
+      if (!cpu_.retire_trapped_syscall(i + 1u)) return false;
+      kernel_semaphores_[i] = {true, initial, maximum};
+      return true;
+    }
+    // Allocation exhausted; do not manufacture duplicate IDs.
+    return cpu_.retire_trapped_syscall(UINT64_MAX);
+  }
+  case 0x41u: // DeleteSema(id)
+  case 0x42u: // SignalSema(id)
+  case 0x44u: // WaitSema(id)
+  case 0x45u: { // PollSema(id)
+    if (arg0 == 0u || arg0 > kernel_semaphores_.size() ||
+        !kernel_semaphores_[arg0 - 1u].in_use)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    auto& sema = kernel_semaphores_[arg0 - 1u];
+    if (number == 0x41u) {
+      if (!cpu_.retire_trapped_syscall(0u)) return false;
+      sema = {};
+      return true;
+    }
+    if (number == 0x42u) {
+      if (sema.count >= sema.maximum)
+        return cpu_.retire_trapped_syscall(UINT64_MAX);
+      if (!cpu_.retire_trapped_syscall(0u)) return false;
+      ++sema.count;
+      return true;
+    }
+    if (sema.count == 0) {
+      // PollSema is nonblocking; WaitSema is not. Until EE thread switching
+      // exists, trapping is safer than pretending an empty wait succeeded.
+      return number == 0x45u
+          ? cpu_.retire_trapped_syscall(UINT64_MAX) : false;
+    }
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    --sema.count;
+    return true;
+  }
   case 0x64u: // FlushCache(mode)
     // EE reads and writes in this runtime are already coherent: there is no
     // separately modeled dirty D-cache or stale I-cache to synchronize.
@@ -147,6 +196,7 @@ void Emulator::service_graphics() {
 void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  kernel_semaphores_ = {};
   gif_.reset();
   vif1_.reset();
   if (image_.ok) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
