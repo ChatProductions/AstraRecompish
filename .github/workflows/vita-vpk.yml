@@ -24,9 +24,9 @@ jobs:
       - name: Configure native host tests
         run: cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
       - name: Compile CPU differential tests
-        run: cmake --build build-host --parallel 2 --target ps2core_tests
+        run: cmake --build build-host --parallel 2 --target ps2core_tests bare_elf_startup_syscalls_tests
       - name: Run CPU and translator regression tests
-        run: ctest --test-dir build-host --output-on-failure -R '^(ps2core_tests|astrair_builder_tests)$'
+        run: ctest --test-dir build-host --output-on-failure -R '^(ps2core_tests|bare_elf_startup_syscalls_tests|astrair_builder_tests)$'
 
   vita-vpk:
     needs: host-tests
