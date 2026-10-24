@@ -58,6 +58,15 @@ python3 tools/generate_astrart.py \
 Keep `SLUS_213.51` and any generated source translated from it private.
 Neither is included in the release package.
 
+## Public GitHub Actions build
+
+The [Vita VPK workflow](https://github.com/ChatProductions/AstraRecompish/actions/workflows/vita-vpk.yml)
+builds the general AstraRecomp frontend and uploads the resulting VPK as a
+downloadable Actions artifact. It runs on pushes to `main` and this research
+branch, or manually via **Run workflow**. It does **not** include the private
+NFSMW executable or any game-specific AOT instructions, and therefore does
+not constitute an NFSMW game build.
+
 ## Opt-in Vita experiment, once VitaSDK is installed
 
 A local Vita build can include the private title package without committing
@@ -66,7 +75,7 @@ the proprietary ELF or the generated C++ to this repository:
 ```sh
 cmake -S . -B build-vita-nfsmw -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
   -DASTRART_PRIVATE_VITA_ELF=/absolute/path/to/SLUS_213.51
-cmake --build build-vita-nfsmw --target ps2vita.vpk -j4
+cmake --build build-vita-nfsmw -j4
 ```
 
 Copy the **same** personally obtained ELF to
