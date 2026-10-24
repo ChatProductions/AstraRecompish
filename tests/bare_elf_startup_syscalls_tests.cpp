@@ -1,5 +1,6 @@
 #include "ps2vita/emulator.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -315,6 +316,55 @@ int main() {
   require(invoke_kernel(0x10u, 15u) == ps2vita::StopReason::StepLimit &&
               kernel_state.gpr[2] == UINT64_MAX,
           "invalid INTC source cannot be registered");
+
+  // Real EE thread contexts: match NFS:MW's observed descriptor shape
+  // (function, stack, 0x400-byte size, gp, priority=0).
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  constexpr std::uint32_t thread_desc = 0x1800u;
+  constexpr std::uint32_t thread_entry = 0x1300u;
+  constexpr std::uint32_t thread_stack = 0x3000u;
+  emulator.memory().write32(thread_entry, 0x24080007u);       // addiu t0,zero,7
+  emulator.memory().write32(thread_entry + 4u, 0x24030024u);  // v1=ExitDeleteThread
+  emulator.memory().write32(thread_entry + 8u, 0x0000000Cu);  // syscall
+  emulator.memory().write32(0x1400u, 0x08000500u);            // j 0x1400
+  emulator.memory().write32(0x1404u, 0u);                    // nop
+  const std::array<std::uint32_t, 9> thread_fields{
+      0u, thread_entry, thread_stack, 0x400u, 0x2000u, 0u, 0u, 0u, 0u};
+  for (std::size_t i = 0u; i < thread_fields.size(); ++i)
+    emulator.memory().write32(thread_desc + 4u * i, thread_fields[i]);
+  require(invoke_kernel(0x20u, thread_desc) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 2u && kernel_state.pc == 0x1004u,
+          "CreateThread validates the real descriptor and allocates ID 2");
+  kernel_state.gpr[5] = 0xBEEFu;
+  require(invoke_kernel(0x22u, 2u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "StartThread schedules the created EE entry with its argument");
+  require(invoke_kernel(0x2Fu, 0u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 1u,
+          "the initial game thread retains EE ID 1");
+  // The bounded host quantum dispatches the ready guest thread.
+  kernel_state.pc = 0x1400u;
+  kernel_state.gpr[8] = 0x1234u;
+  const auto clocks_before_switch = kernel_state.cycles;
+  require(emulator.run_slice(254u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == thread_entry &&
+              kernel_state.gpr[4] == 0xBEEFu &&
+              kernel_state.gpr[28] == 0x2000u &&
+              kernel_state.gpr[29] == thread_stack + 0x3F0u &&
+              kernel_state.cycles == clocks_before_switch + 254u,
+          "scheduler saves main context and restores entry, argument and stack");
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[8] == 7u,
+          "scheduled thread actually executes its own guest instructions");
+  require(emulator.run_slice(2u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1400u &&
+              kernel_state.gpr[8] == 0x1234u &&
+              kernel_state.cycles == clocks_before_switch + 257u,
+          "ExitDeleteThread resumes main with intact GPRs and monotonic clock");
+  require(invoke_kernel(0x21u, 2u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "deleted guest EE thread cannot be deleted a second time");
 
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;

@@ -66,6 +66,33 @@ public:
   bool set_startup_aot_package(const AotPackage* package);
   void request_halt();
   void set_exception_mode(bool enabled) { exception_mode_ = enabled; }
+  // Guest EE threads have independent register and branch-delay contexts.
+  // Global EE clock/counters remain monotonic across switches.
+  struct ThreadContext {
+    CpuState state{};
+    bool branch_pending = false;
+    std::uint32_t pending_target = 0;
+  };
+  ThreadContext save_thread_context() const {
+    return {state_, branch_pending_, pending_target_};
+  }
+  void load_thread_context(const ThreadContext& context) {
+    const auto cycles = state_.cycles;
+    const auto count = state_.cop0[9];
+    const auto fast = state_.fast_path_instructions;
+    const auto traces = state_.aot_trace_entries;
+    const auto fallbacks = state_.aot_trace_horizon_fallbacks;
+    state_ = context.state;
+    state_.cycles = cycles;
+    state_.cop0[9] = count;
+    state_.fast_path_instructions = fast;
+    state_.aot_trace_entries = traces;
+    state_.aot_trace_horizon_fallbacks = fallbacks;
+    branch_pending_ = context.branch_pending;
+    pending_target_ = context.pending_target;
+    stop_reason_ = StopReason::None;
+    fault_instruction_ = fault_address_ = 0;
+  }
 
   const CpuState& state() const { return state_; }
   CpuState& state() { return state_; }

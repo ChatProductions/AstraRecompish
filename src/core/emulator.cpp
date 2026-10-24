@@ -9,6 +9,9 @@ namespace {
 // Games can discover the registered handlers by scanning kernel memory.
 constexpr std::uint32_t kBareElfSyscallTable = 0x80010000u;
 constexpr std::uint32_t kBareElfSyscallSlots = 0x130u;
+// Guest-visible return trampoline for EE threads whose entry functions return.
+constexpr std::uint32_t kThreadExitTrampoline = 0x80010800u;
+constexpr std::uint32_t kThreadQuantum = 256u;
 
 void set_bios_reset_state(CpuState& state) {
   state.cop0[12] = 0x70400004u; // CU0/1/2 + BEV + reset-time ERL.
@@ -34,12 +37,19 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  kernel_threads_ = {};
+  current_thread_index_ = 0u;
+  thread_quantum_remaining_ = kThreadQuantum;
   intc_handlers_ = {};
   dmac_handlers_ = {};
   guest_syscall_returns_ = {};
   guest_syscall_depth_ = 0u;
   ready_ = image_.ok;
-  if (ready_) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
+  if (ready_) {
+    cpu_.reset(image_.entry);
+    cpu_.set_exception_mode(false);
+    initialize_kernel_threads();
+  }
   return image_;
 }
 
@@ -59,6 +69,9 @@ bool Emulator::boot_bios() {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  kernel_threads_ = {};
+  current_thread_index_ = 0u;
+  thread_quantum_remaining_ = kThreadQuantum;
   intc_handlers_ = {};
   dmac_handlers_ = {};
   guest_syscall_returns_ = {};
@@ -67,6 +80,51 @@ bool Emulator::boot_bios() {
   vif1_.reset();
   set_bios_reset_state(cpu_.state());
   cpu_.set_exception_mode(true);
+  return true;
+}
+
+void Emulator::initialize_kernel_threads() {
+  kernel_threads_ = {};
+  current_thread_index_ = 0u;
+  thread_quantum_remaining_ = kThreadQuantum;
+  // MIPS: addiu $v1, $zero, 0x24; syscall; break.
+  // A normal returning thread receives the same ExitDeleteThread service.
+  memory_.write32(kThreadExitTrampoline, 0x24030024u);
+  memory_.write32(kThreadExitTrampoline + 4u, 0x0000000Cu);
+  memory_.write32(kThreadExitTrampoline + 8u, 0x0000000Du);
+  kernel_threads_[0].status = 1u;
+  kernel_threads_[0].priority = 0u;
+  kernel_threads_[0].entry = image_.entry;
+  kernel_threads_[0].context = cpu_.save_thread_context();
+}
+
+bool Emulator::has_ready_thread() const {
+  for (const auto& thread : kernel_threads_)
+    if (thread.status == 2u) return true;
+  return false;
+}
+
+bool Emulator::switch_to_ready_thread() {
+  if (guest_syscall_depth_ != 0u) return false;
+  // Prefer lower numeric priority, then stable round-robin among peers.
+  std::size_t choice = kernel_threads_.size();
+  std::uint32_t best = 128u;
+  for (std::size_t offset = 1u; offset <= kernel_threads_.size(); ++offset) {
+    const auto i = (current_thread_index_ + offset) % kernel_threads_.size();
+    const auto& candidate = kernel_threads_[i];
+    if (candidate.status != 2u || candidate.priority >= best) continue;
+    best = candidate.priority;
+    choice = i;
+  }
+  if (choice == kernel_threads_.size()) return false;
+  auto& current = kernel_threads_[current_thread_index_];
+  current.context = cpu_.save_thread_context();
+  if (current.status == 1u) current.status = 2u;
+  current_thread_index_ = choice;
+  auto& next = kernel_threads_[choice];
+  next.status = 1u;
+  cpu_.load_thread_context(next.context);
+  thread_quantum_remaining_ = kThreadQuantum;
   return true;
 }
 
@@ -83,6 +141,8 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
     // Observe each instruction while one runs, so $ra is restored before
     // the original syscall wrapper executes its next instruction.
     if (guest_syscall_depth_ != 0u) budget = std::min(budget, 1u);
+    else if (image_.ok && has_ready_thread())
+      budget = std::min(budget, thread_quantum_remaining_);
     const auto cycles_before = cpu_.state().cycles;
     const auto result = cpu_.run(budget);
     const auto executed = static_cast<std::uint32_t>(
@@ -105,14 +165,27 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
       const auto frame = guest_syscall_returns_[--guest_syscall_depth_];
       cpu_.state().gpr[31] = frame.original_ra;
     }
+    // Slice boundaries and syscall retirements are safe EE scheduling points.
+    // Never switch inside a guest-installed kernel syscall callback.
+    const auto rotate_if_needed = [&]() {
+      if (!image_.ok || guest_syscall_depth_ != 0u ||
+          !has_ready_thread()) return;
+      if (executed >= thread_quantum_remaining_) {
+        if (!switch_to_ready_thread()) thread_quantum_remaining_ = kThreadQuantum;
+      } else {
+        thread_quantum_remaining_ -= executed;
+      }
+    };
     if (result == StopReason::Syscall && image_.ok &&
         bare_elf_startup_syscalls_ && handle_bare_elf_startup_syscall()) {
       // The syscall was already counted by Cpu::step; continue with the
       // remaining guest-instruction budget, without counting it twice.
+      rotate_if_needed();
       continue;
     }
     if (result != StopReason::StepLimit) return result;
     if (executed == 0u) return StopReason::Halted;
+    rotate_if_needed();
   }
   return StopReason::StepLimit;
 }
@@ -207,6 +280,182 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     if (was_enabled != should_enable) memory_.write32(kDmacStat, bit);
     return true;
   }
+  case 0x20u: { // CreateThread(ee_thread_t*): nine 32-bit words.
+    constexpr std::uint32_t kDescriptorSize = 36u;
+    if ((arg0 & 3u) != 0u || !memory_.valid(arg0, kDescriptorSize))
+      return false;
+    const auto entry = memory_.read32(arg0 + 4u);
+    const auto stack = memory_.read32(arg0 + 8u);
+    const auto stack_size = memory_.read32(arg0 + 12u);
+    const auto gp = memory_.read32(arg0 + 16u);
+    const auto priority = memory_.read32(arg0 + 20u);
+    const auto attr = memory_.read32(arg0 + 28u);
+    const auto option = memory_.read32(arg0 + 32u);
+    const std::uint64_t top = static_cast<std::uint64_t>(stack) + stack_size;
+    if (entry == 0u || (entry & 3u) != 0u ||
+        !memory_.instruction_reads_side_effect_free(entry, 4u) ||
+        stack == 0u || (stack & 15u) != 0u ||
+        stack_size < 0x100u || (stack_size & 15u) != 0u ||
+        top > UINT32_MAX || !memory_.valid(stack, stack_size) ||
+        priority >= 128u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    // EE kernel reserves slot 0 for the boot thread. The observed NFS:MW
+    // thread descriptor has priority 0, so retain that valid initial value.
+    for (std::size_t i = 1u; i < kernel_threads_.size(); ++i) {
+      if (kernel_threads_[i].status != 0u) continue;
+      if (!cpu_.retire_trapped_syscall(i + 1u)) return false;
+      auto& t = kernel_threads_[i];
+      t = {};
+      t.status = 16u; // DORMANT until StartThread.
+      t.entry = entry;
+      t.stack = stack;
+      t.stack_size = stack_size;
+      t.gp = gp;
+      t.initial_priority = priority;
+      t.priority = static_cast<std::uint16_t>(priority);
+      t.attr = attr;
+      t.option = option;
+      return true;
+    }
+    return cpu_.retire_trapped_syscall(UINT64_MAX);
+  }
+  case 0x21u: { // DeleteThread(id): only dormant threads can be deleted.
+    if (arg0 < 2u || arg0 > kernel_threads_.size() ||
+        kernel_threads_[arg0 - 1u].status != 16u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    kernel_threads_[arg0 - 1u] = {};
+    return true;
+  }
+  case 0x22u: { // StartThread(id, arg): ready EE context, not a fake success.
+    if (arg0 < 2u || arg0 > kernel_threads_.size() ||
+        kernel_threads_[arg0 - 1u].status != 16u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    auto& t = kernel_threads_[arg0 - 1u];
+    auto ctx = cpu_.save_thread_context();
+    ctx.branch_pending = false;
+    ctx.pending_target = 0u;
+    ctx.state.gpr = {};
+    ctx.state.gpr_hi = {};
+    ctx.state.pc = t.entry;
+    ctx.state.gpr[4] = arg1;
+    ctx.state.gpr[28] = t.gp;
+    ctx.state.gpr[29] = static_cast<std::uint32_t>(
+        (std::uint64_t{t.stack} + t.stack_size - 16u) & ~15ull);
+    ctx.state.gpr[31] = kThreadExitTrampoline;
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    t.context = ctx;
+    t.status = 2u; // READY. The scheduler dispatches at a safe boundary.
+    t.wait_type = 0u;
+    t.wait_id = 0u;
+    return true;
+  }
+  case 0x23u: // ExitThread()
+  case 0x24u: { // ExitDeleteThread()
+    if (guest_syscall_depth_ != 0u) return false;
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    const auto exited = current_thread_index_;
+    kernel_threads_[exited].status = 16u;
+    kernel_threads_[exited].wait_type = 0u;
+    if (!switch_to_ready_thread()) {
+      // No runnable guest thread remains; do not keep executing a dead one.
+      cpu_.request_halt();
+      return true;
+    }
+    if (number == 0x24u) kernel_threads_[exited] = {};
+    return true;
+  }
+  case 0x25u: { // TerminateThread(id) -> DORMANT.
+    if (arg0 < 2u || arg0 > kernel_threads_.size() ||
+        arg0 == current_thread_index_ + 1u ||
+        kernel_threads_[arg0 - 1u].status == 0u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    auto& t = kernel_threads_[arg0 - 1u];
+    t.status = 16u;
+    t.wait_type = 0u;
+    t.wait_id = 0u;
+    return true;
+  }
+  case 0x29u: { // ChangeThreadPriority(id, priority), id=0 is self.
+    const auto index = arg0 == 0u ? current_thread_index_ : arg0 - 1u;
+    if (arg0 > kernel_threads_.size() || arg1 >= 128u ||
+        kernel_threads_[index].status == 0u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    const auto previous = kernel_threads_[index].priority;
+    if (!cpu_.retire_trapped_syscall(previous)) return false;
+    kernel_threads_[index].priority = static_cast<std::uint16_t>(arg1);
+    return true;
+  }
+  case 0x2Fu: // GetThreadId()
+    return cpu_.retire_trapped_syscall(current_thread_index_ + 1u);
+  case 0x30u: { // ReferThreadStatus(id, ee_thread_status_t*).
+    const auto index = arg0 == 0u ? current_thread_index_ : arg0 - 1u;
+    if (arg0 > kernel_threads_.size() ||
+        kernel_threads_[index].status == 0u ||
+        (arg1 & 3u) != 0u || !memory_.valid(arg1, 48u))
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    const auto& t = kernel_threads_[index];
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    const std::array<std::uint32_t, 12> fields{
+        t.status, t.entry, t.stack, t.stack_size, t.gp,
+        t.initial_priority, t.priority, t.attr, t.option,
+        t.wait_type, t.wait_id, t.wakeups};
+    for (std::size_t i = 0u; i < fields.size(); ++i)
+      memory_.write32(arg1 + static_cast<std::uint32_t>(4u * i), fields[i]);
+    return true;
+  }
+  case 0x32u: { // SleepThread(), waits unless a wakeup is pending.
+    auto& t = kernel_threads_[current_thread_index_];
+    if (t.wakeups != 0u) {
+      if (!cpu_.retire_trapped_syscall(0u)) return false;
+      --t.wakeups;
+      return true;
+    }
+    if (!has_ready_thread() || guest_syscall_depth_ != 0u) return false;
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    t.status = 4u;
+    t.wait_type = 1u;
+    t.wait_id = 0u;
+    return switch_to_ready_thread();
+  }
+  case 0x33u: { // WakeupThread(id).
+    if (arg0 == 0u || arg0 > kernel_threads_.size() ||
+        kernel_threads_[arg0 - 1u].status == 0u ||
+        kernel_threads_[arg0 - 1u].status == 16u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    auto& t = kernel_threads_[arg0 - 1u];
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    if (t.status == 4u && t.wait_type == 1u) {
+      t.status = 2u;
+      t.wait_type = 0u;
+    } else if (t.wakeups != UINT32_MAX) {
+      ++t.wakeups;
+    }
+    return true;
+  }
+  case 0x35u: { // CancelWakeupThread(id), returns old wakeup count.
+    if (arg0 == 0u || arg0 > kernel_threads_.size() ||
+        kernel_threads_[arg0 - 1u].status == 0u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    auto& t = kernel_threads_[arg0 - 1u];
+    if (!cpu_.retire_trapped_syscall(t.wakeups)) return false;
+    t.wakeups = 0u;
+    return true;
+  }
+  case 0x2Du: { // ReleaseWaitThread(id), only blocked EE threads.
+    if (arg0 == 0u || arg0 > kernel_threads_.size() ||
+        kernel_threads_[arg0 - 1u].status != 4u)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    auto& t = kernel_threads_[arg0 - 1u];
+    t.status = 2u;
+    t.wait_type = 0u;
+    t.wait_id = 0u;
+    // A semaphore wait ended without acquisition.
+    t.context.state.gpr[2] = UINT64_MAX;
+    return true;
+  }
   case 0x3Cu: { // SetupThread(gp, stack_base, stack_size, args, root_func)
     // In the common explicit-stack form, the kernel returns stack+size.
     // Refuse sentinel/invalid ranges rather than invent a kernel layout.
@@ -257,9 +506,27 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     if (number == 0x41u) {
       if (!cpu_.retire_trapped_syscall(0u)) return false;
       sema = {};
+      for (auto& t : kernel_threads_) {
+        if (t.status != 4u || t.wait_type != 2u || t.wait_id != arg0)
+          continue;
+        t.status = 2u;
+        t.wait_type = 0u;
+        t.wait_id = 0u;
+        t.context.state.gpr[2] = UINT64_MAX;
+      }
       return true;
     }
     if (number == 0x42u) {
+      // A signal transfers the token directly to one waiting thread.
+      for (auto& t : kernel_threads_) {
+        if (t.status != 4u || t.wait_type != 2u || t.wait_id != arg0)
+          continue;
+        if (!cpu_.retire_trapped_syscall(0u)) return false;
+        t.status = 2u;
+        t.wait_type = 0u;
+        t.wait_id = 0u;
+        return true;
+      }
       if (sema.count >= sema.maximum)
         return cpu_.retire_trapped_syscall(UINT64_MAX);
       if (!cpu_.retire_trapped_syscall(0u)) return false;
@@ -267,10 +534,15 @@ bool Emulator::handle_bare_elf_startup_syscall() {
       return true;
     }
     if (sema.count == 0) {
-      // PollSema is nonblocking; WaitSema is not. Until EE thread switching
-      // exists, trapping is safer than pretending an empty wait succeeded.
-      return number == 0x45u
-          ? cpu_.retire_trapped_syscall(UINT64_MAX) : false;
+      if (number == 0x45u)
+        return cpu_.retire_trapped_syscall(UINT64_MAX);
+      if (!has_ready_thread() || guest_syscall_depth_ != 0u) return false;
+      if (!cpu_.retire_trapped_syscall(0u)) return false;
+      auto& t = kernel_threads_[current_thread_index_];
+      t.status = 4u;
+      t.wait_type = 2u;
+      t.wait_id = arg0;
+      return switch_to_ready_thread();
     }
     if (!cpu_.retire_trapped_syscall(0u)) return false;
     --sema.count;
@@ -303,6 +575,9 @@ void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  kernel_threads_ = {};
+  current_thread_index_ = 0u;
+  thread_quantum_remaining_ = kThreadQuantum;
   intc_handlers_ = {};
   dmac_handlers_ = {};
   // Reset does not zero all EE RAM; explicitly remove old kernel hooks.
@@ -312,7 +587,11 @@ void Emulator::reset() {
   guest_syscall_depth_ = 0u;
   gif_.reset();
   vif1_.reset();
-  if (image_.ok) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
+  if (image_.ok) {
+    cpu_.reset(image_.entry);
+    cpu_.set_exception_mode(false);
+    initialize_kernel_threads();
+  }
   else if (memory_.has_bios()) {
     cpu_.reset(0xBFC00000u);
     iop_.reset();

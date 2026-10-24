@@ -55,6 +55,9 @@ public:
 
 private:
   bool handle_bare_elf_startup_syscall();
+  void initialize_kernel_threads();
+  bool has_ready_thread() const;
+  bool switch_to_ready_thread();
   Memory memory_;
   Cpu cpu_;
   IopCpu iop_;
@@ -76,6 +79,26 @@ private:
     std::int32_t maximum = 0;
   };
   std::array<KernelSemaphore, 64> kernel_semaphores_{};
+  // EE thread objects: 0=free, 1=run, 2=ready, 4=wait, 16=dormant.
+  // Slots are bounded; slot 0 is the primary ELF thread (ID 1).
+  struct KernelThread {
+    std::uint8_t status = 0;
+    std::uint8_t wait_type = 0; // 1=sleep, 2=semaphore
+    std::uint16_t priority = 0;
+    std::uint32_t wait_id = 0;
+    std::uint32_t wakeups = 0;
+    std::uint32_t entry = 0;
+    std::uint32_t stack = 0;
+    std::uint32_t stack_size = 0;
+    std::uint32_t gp = 0;
+    std::uint32_t initial_priority = 0;
+    std::uint32_t attr = 0;
+    std::uint32_t option = 0;
+    Cpu::ThreadContext context{};
+  };
+  std::array<KernelThread, 32> kernel_threads_{};
+  std::size_t current_thread_index_ = 0;
+  std::uint32_t thread_quantum_remaining_ = 256u;
   // Kernel interrupt-handler registrations. Delivery needs the separately
   // modeled EE timer/interrupt scheduler; registration alone never fires.
   struct KernelInterruptHandler {
