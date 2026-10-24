@@ -29,6 +29,9 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  guest_syscall_handlers_ = {};
+  guest_syscall_returns_ = {};
+  guest_syscall_depth_ = 0u;
   ready_ = image_.ok;
   if (ready_) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
   return image_;
@@ -50,6 +53,9 @@ bool Emulator::boot_bios() {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  guest_syscall_handlers_ = {};
+  guest_syscall_returns_ = {};
+  guest_syscall_depth_ = 0u;
   gif_.reset();
   vif1_.reset();
   set_bios_reset_state(cpu_.state());
@@ -66,6 +72,10 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
   while (remaining != 0u) {
     auto budget = std::min(remaining, memory_.cycles_until_next_event());
     if (!image_.ok) budget = std::min(budget, ee_cycles_until_iop_);
+    // A guest syscall handler returns through an EE instruction sequence.
+    // Observe each instruction while one runs, so $ra is restored before
+    // the original syscall wrapper executes its next instruction.
+    if (guest_syscall_depth_ != 0u) budget = std::min(budget, 1u);
     const auto cycles_before = cpu_.state().cycles;
     const auto result = cpu_.run(budget);
     const auto executed = static_cast<std::uint32_t>(
@@ -82,6 +92,12 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
     // before EE polling code observes completion and reads VU memory. A fixed
     // host quantum alone can delay this visibility by several instructions.
     service_graphics();
+    if (guest_syscall_depth_ != 0u &&
+        cpu_.state().pc ==
+            guest_syscall_returns_[guest_syscall_depth_ - 1u].continuation) {
+      const auto frame = guest_syscall_returns_[--guest_syscall_depth_];
+      cpu_.state().gpr[31] = frame.original_ra;
+    }
     if (result == StopReason::Syscall && image_.ok &&
         bare_elf_startup_syscalls_ && handle_bare_elf_startup_syscall()) {
       // The syscall was already counted by Cpu::step; continue with the
@@ -100,7 +116,31 @@ bool Emulator::handle_bare_elf_startup_syscall() {
   const auto arg0 = static_cast<std::uint32_t>(state.gpr[4]);
   const auto arg1 = static_cast<std::uint32_t>(state.gpr[5]);
   const auto arg2 = static_cast<std::uint32_t>(state.gpr[6]);
+  // User-installed SetSyscall handlers take precedence over built-in EE
+  // services, as they do when the BIOS dispatch table has been patched.
+  if (number < guest_syscall_handlers_.size() &&
+      guest_syscall_handlers_[number] != 0u) {
+    if (guest_syscall_depth_ == guest_syscall_returns_.size()) return false;
+    const auto handler = guest_syscall_handlers_[number];
+    if (!memory_.instruction_reads_side_effect_free(handler, 4u)) return false;
+    const auto continuation = state.pc + 4u;
+    const auto saved_ra = state.gpr[31];
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    guest_syscall_returns_[guest_syscall_depth_++] = {continuation, saved_ra};
+    state.gpr[31] = continuation;
+    state.pc = handler;
+    return true;
+  }
   switch (number) {
+  case 0x74u: { // SetSyscall(number, guest_handler); returns void.
+    if (arg0 >= guest_syscall_handlers_.size() ||
+        (arg1 != 0u && ((arg1 & 3u) != 0u ||
+         !memory_.instruction_reads_side_effect_free(arg1, 4u))))
+      return false;
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    guest_syscall_handlers_[arg0] = arg1;
+    return true;
+  }
   case 0x3Cu: { // SetupThread(gp, stack_base, stack_size, args, root_func)
     // In the common explicit-stack form, the kernel returns stack+size.
     // Refuse sentinel/invalid ranges rather than invent a kernel layout.
@@ -197,6 +237,9 @@ void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  guest_syscall_handlers_ = {};
+  guest_syscall_returns_ = {};
+  guest_syscall_depth_ = 0u;
   gif_.reset();
   vif1_.reset();
   if (image_.ok) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }

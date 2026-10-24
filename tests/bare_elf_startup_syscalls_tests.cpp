@@ -188,6 +188,46 @@ int main() {
               kernel_state.pc == 0x1000u,
           "invalid pointer to CreateSema is not blindly dereferenced");
 
+
+  // The game registers its own FindAddress (0x83) implementation using
+  // SetSyscall (0x74). Exercise real guest code dispatch and the return path.
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  emulator.memory().write32(0x1100u, 0x2402002Au); // addiu v0, zero, 42
+  emulator.memory().write32(0x1104u, 0x03E00008u); // jr ra
+  emulator.memory().write32(0x1108u, 0x00000000u); // nop (delay slot)
+  kernel_state.gpr[2] = 0x12345u;
+  kernel_state.gpr[5] = 0x1100u;
+  require(invoke_kernel(0x74u, 0x83u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1004u &&
+              kernel_state.gpr[2] == 0x12345u,
+          "SetSyscall registers guest code without clobbering a void return");
+  kernel_state.gpr[31] = 0x2220u;
+  require(invoke_kernel(0x83u, 0u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1100u &&
+              kernel_state.gpr[31] == 0x1004u,
+          "registered syscall enters the guest handler");
+  require(emulator.run_slice(3u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1004u &&
+              kernel_state.gpr[2] == 42u &&
+              kernel_state.gpr[31] == 0x2220u,
+          "guest handler returns to syscall continuation and restores RA");
+  kernel_state.gpr[5] = 0u;
+  require(invoke_kernel(0x74u, 0x83u) == ps2vita::StopReason::StepLimit,
+          "SetSyscall with null handler unregisters the override");
+  require(invoke_kernel(0x83u, 0u) == ps2vita::StopReason::Syscall &&
+              kernel_state.pc == 0x1000u,
+          "unregistered service remains an explicit syscall stop");
+
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  kernel_state.gpr[5] = 0x1100u;
+  require(invoke_kernel(0x83u, 0u) == ps2vita::StopReason::Syscall,
+          "reset also removes guest syscall table registrations");
+  require(invoke_kernel(0x74u, 0x130u) == ps2vita::StopReason::Syscall &&
+              kernel_state.pc == 0x1000u,
+          "out-of-range SetSyscall requests are not silently accepted");
+
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
 }

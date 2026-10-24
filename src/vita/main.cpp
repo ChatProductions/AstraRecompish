@@ -66,13 +66,23 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
   const auto read_debug = [&](std::uint32_t address) {
     return memory.valid(address, 4) ? memory.read32(address) : 0xFFFFFFFFu;
   };
+  // Most kernel services take a pointer in a0. Keep the next diagnostic
+  // useful without touching MMIO or allowing an out-of-bounds guest read.
+  const auto a0_pointer = static_cast<std::uint32_t>(state.gpr[4]);
+  const bool a0_is_ram = (a0_pointer & 3u) == 0u &&
+      a0_pointer <= ps2vita::Memory::kRamSize - 24u;
+  const auto a0_word = [&](std::uint32_t index) {
+    return a0_is_ram ? memory.read32(a0_pointer + index * 4u)
+                     : 0xFFFFFFFFu;
+  };
   std::snprintf(report, sizeof(report),
       "reason=%s\npc=%08X\nopcode=%08X\ncycles=%llu\n"
       "v0=%016llX\na0=%016llX\nsp=%016llX\nra=%016llX\n"
       "v1=%016llX\na1=%016llX\na2=%016llX\na3=%016llX\nt0=%016llX\n"
       "status=%08X\ncause=%08X\nepc=%08X\nbadvaddr=%08X\n"
       "epc_opcode=%08X\nvector180=%08X,%08X,%08X,%08X\n"
-      "vector200=%08X,%08X,%08X,%08X\n",
+      "vector200=%08X,%08X,%08X,%08X\n"
+      "a0_words=%08X,%08X,%08X,%08X,%08X,%08X\n",
       ps2vita::stop_reason_name(reason), state.pc, cpu.fault_instruction(),
       static_cast<unsigned long long>(state.cycles),
       static_cast<unsigned long long>(state.gpr[2]),
@@ -89,7 +99,9 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
       read_debug(0x80000180u), read_debug(0x80000184u),
       read_debug(0x80000188u), read_debug(0x8000018Cu),
       read_debug(0x80000200u), read_debug(0x80000204u),
-      read_debug(0x80000208u), read_debug(0x8000020Cu));
+      read_debug(0x80000208u), read_debug(0x8000020Cu),
+      a0_word(0u), a0_word(1u), a0_word(2u),
+      a0_word(3u), a0_word(4u), a0_word(5u));
   const int fd = sceIoOpen(kFaultPath, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));

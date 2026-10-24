@@ -76,6 +76,15 @@ private:
     std::int32_t maximum = 0;
   };
   std::array<KernelSemaphore, 64> kernel_semaphores_{};
+  // SetSyscall installs guest EE code addresses into the kernel table.
+  // A bounded return stack preserves the original RA across guest callbacks.
+  std::array<std::uint32_t, 0x130> guest_syscall_handlers_{};
+  struct GuestSyscallReturn {
+    std::uint32_t continuation = 0;
+    std::uint64_t original_ra = 0;
+  };
+  std::array<GuestSyscallReturn, 4> guest_syscall_returns_{};
+  std::size_t guest_syscall_depth_ = 0;
 };
 
 } // namespace ps2vita
