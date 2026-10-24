@@ -109,13 +109,14 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
 }
 
 void write_progress(const ps2vita::Emulator& emulator) {
-  char report[256];
+  char report[512];
   const auto& state = emulator.cpu().state();
   const auto opcode = emulator.memory().read32(state.pc);
   std::snprintf(report, sizeof(report),
       "pc=%08X\nopcode=%08X\ncycles=%llu\nfast_path_instructions=%llu\n"
       "aot_trace_entries=%llu\naot_trace_horizon_fallbacks=%llu\n"
-      "v0=%016llX\na0=%016llX\nsp=%016llX\nra=%016llX\n"
+      "v0=%016llX\na0=%016llX\na1=%016llX\na2=%016llX\n"
+      "sp=%016llX\nra=%016llX\n"
       "status=%08X\ncause=%08X\nepc=%08X\nbadvaddr=%08X\n",
       state.pc, opcode, static_cast<unsigned long long>(state.cycles),
       static_cast<unsigned long long>(state.fast_path_instructions),
@@ -123,6 +124,8 @@ void write_progress(const ps2vita::Emulator& emulator) {
       static_cast<unsigned long long>(state.aot_trace_horizon_fallbacks),
       static_cast<unsigned long long>(state.gpr[2]),
       static_cast<unsigned long long>(state.gpr[4]),
+      static_cast<unsigned long long>(state.gpr[5]),
+      static_cast<unsigned long long>(state.gpr[6]),
       static_cast<unsigned long long>(state.gpr[29]),
       static_cast<unsigned long long>(state.gpr[31]), state.cop0[12],
       state.cop0[13], state.cop0[14], state.cop0[8]);
@@ -281,8 +284,11 @@ void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
                 static_cast<unsigned>(cpu.gpr[2]), static_cast<unsigned>(cpu.gpr[4]),
                 static_cast<unsigned>(cpu.gpr[29]));
   screen.text(52, 228, line, dim, 2);
-  std::snprintf(line, sizeof(line), "NATIVE FAST: %llu INSTRUCTIONS",
-                static_cast<unsigned long long>(cpu.fast_path_instructions));
+  // A0 is visible above. A1/A2 expose bounded memory-search loops
+  // without requiring another device-side log round trip.
+  std::snprintf(line, sizeof(line), "NATIVE FAST:%llu A1:%08X A2:%08X",
+                static_cast<unsigned long long>(cpu.fast_path_instructions),
+                static_cast<unsigned>(cpu.gpr[5]), static_cast<unsigned>(cpu.gpr[6]));
   screen.text(52, 260, line, dim, 2);
   std::snprintf(line, sizeof(line), "PS2R AOT T0: %s   INTERP:%u   NATIVE:%u",
                 aot_probe.matched ? "PASS" : "FAIL",
