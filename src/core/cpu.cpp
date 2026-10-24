@@ -1,4 +1,5 @@
 #include "ps2vita/cpu.hpp"
+#include "ps2vita/aot.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -98,9 +99,18 @@ void Cpu::reset(std::uint32_t entry) {
   pending_target_ = 0;
   halt_requested_ = false;
   exception_mode_ = false;
+  startup_aot_armed_ = startup_aot_package_ != nullptr;
 }
 
 void Cpu::request_halt() { halt_requested_ = true; }
+
+bool Cpu::set_startup_aot_package(const AotPackage* package) {
+  if (package != nullptr && !validate_aot_package(*package).ok())
+    return false;
+  startup_aot_package_ = package;
+  startup_aot_armed_ = package != nullptr;
+  return true;
+}
 
 void Cpu::set_reg(unsigned index, std::uint64_t value) {
   if (index != 0) state_.gpr[index] = value;
@@ -238,6 +248,27 @@ StopReason Cpu::run(std::uint32_t instruction_budget) {
   // The interpreter does not consume decoded-block metadata. Warming it here
   // wasted slice work and could perform nonarchitectural MMIO instruction reads.
   for (std::uint32_t i = 0; i < instruction_budget;) {
+    // The single startup block can run natively only when fully inside the
+    // requested quantum and before the next device event. Never cross a
+    // pending delay slot, interrupt, or exception-mode execution boundary.
+    if (startup_aot_armed_ && startup_aot_package_ &&
+        !branch_pending_ && !halt_requested_ && !exception_mode_ &&
+        memory_.ee_interrupt_lines() == 0u) {
+      const auto* entry = find_aot_function(*startup_aot_package_, state_.pc);
+      if (entry) {
+        const auto maximum = (entry->guest_end - entry->guest_start) / 4u;
+        if (maximum <= instruction_budget - i &&
+            maximum <= memory_.cycles_until_next_event()) {
+          const auto exit = execute_aot(*startup_aot_package_, memory_, state_);
+          if (exit.instructions != 0u) {
+            i += exit.instructions;
+            if (exit.kind == AotExitKind::Stop)
+              return stop_reason_ = exit.reason;
+            continue;
+          }
+        }
+      }
+    }
     const auto fast_instructions = try_fast_zero_fill(instruction_budget - i);
     if (fast_instructions != 0) {
       i += fast_instructions;
@@ -445,6 +476,11 @@ StopReason Cpu::execute(std::uint32_t ins, std::uint32_t pc,
     break;
 
   case 0x01: { // REGIMM
+    if (rt == 0x19) { // R5900 MTSAH (not a branch).
+      state_.shift_amount = ((static_cast<std::uint32_t>(rsv) & 7u) ^
+                             (ins & 7u)) << 1;
+      break;
+    }
     const auto signed_rs = static_cast<std::int64_t>(rsv);
     bool take = false;
     bool likely = false;

@@ -52,25 +52,44 @@ void glyph(char input, std::uint8_t out[5]) {
 bool Screen::init() {
   constexpr std::size_t bytes = kPitch * kHeight * sizeof(std::uint32_t);
   constexpr std::size_t aligned = (bytes + 0x3FFFFu) & ~0x3FFFFu;
-  memblock_ = sceKernelAllocMemBlock("ps2vita framebuffer",
-      SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, aligned, nullptr);
-  if (memblock_ < 0 || sceKernelGetMemBlockBase(memblock_,
-      reinterpret_cast<void**>(&pixels_)) < 0) return false;
+  // Both buffers share a 4 MiB CDRAM allocation. Keep the next draw frame
+  // separate from the front frame being scanned out by the Vita display.
+  memblock_ = sceKernelAllocMemBlock("ps2vita framebuffers",
+      SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, aligned * 2u, nullptr);
+  if (memblock_ < 0) return false;
+  void* base = nullptr;
+  if (sceKernelGetMemBlockBase(memblock_, &base) < 0 || !base) {
+    shutdown();
+    return false;
+  }
+  front_ = static_cast<std::uint32_t*>(base);
+  pixels_ = reinterpret_cast<std::uint32_t*>(
+      static_cast<std::uint8_t*>(base) + aligned);
+  for (int i = 0; i < kPitch * kHeight; ++i) {
+    front_[i] = 0xFF000000u;
+    pixels_[i] = 0xFF000000u;
+  }
 
   SceDisplayFrameBuf frame{};
   frame.size = sizeof(frame);
-  frame.base = pixels_;
+  frame.base = front_;
   frame.pitch = kPitch;
   frame.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
   frame.width = kWidth;
   frame.height = kHeight;
-  return sceDisplaySetFrameBuf(&frame, SCE_DISPLAY_SETBUF_NEXTFRAME) >= 0;
+  if (sceDisplaySetFrameBuf(&frame, SCE_DISPLAY_SETBUF_NEXTFRAME) < 0) {
+    shutdown();
+    return false;
+  }
+  sceDisplayWaitVblankStart();
+  return true;
 }
 
 void Screen::shutdown() {
   if (memblock_ >= 0) sceKernelFreeMemBlock(memblock_);
   memblock_ = -1;
   pixels_ = nullptr;
+  front_ = nullptr;
 }
 
 void Screen::clear(std::uint32_t color) {
@@ -103,4 +122,20 @@ void Screen::blit_160x112(const std::uint32_t* source, int y_offset) {
   ps2vita::blit_monitor_160x112(pixels_, kPitch * kHeight, kPitch, source, y_offset);
 }
 
-void Screen::present() { sceDisplayWaitVblankStart(); }
+void Screen::present() {
+  if (!pixels_ || !front_) return;
+  SceDisplayFrameBuf frame{};
+  frame.size = sizeof(frame);
+  frame.base = pixels_;
+  frame.pitch = kPitch;
+  frame.pixelformat = SCE_DISPLAY_PIXELFORMAT_A8B8G8R8;
+  frame.width = kWidth;
+  frame.height = kHeight;
+  // Queue the finished back buffer for the next refresh. Only after the
+  // display has swapped do we draw over the previous front buffer.
+  if (sceDisplaySetFrameBuf(&frame, SCE_DISPLAY_SETBUF_NEXTFRAME) < 0) return;
+  sceDisplayWaitVblankStart();
+  auto* previous_front = front_;
+  front_ = pixels_;
+  pixels_ = previous_front;
+}

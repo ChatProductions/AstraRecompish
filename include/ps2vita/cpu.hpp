@@ -7,6 +7,8 @@
 
 namespace ps2vita {
 
+struct AotPackage;
+
 enum class StopReason {
   None,
   Halted,
@@ -54,6 +56,9 @@ public:
   void reset(std::uint32_t entry);
   StopReason step();
   StopReason run(std::uint32_t instruction_budget);
+  // Opt-in first-block acceleration for a separately built title package.
+  // Ordinary BIOS and emulator runs remain interpreter-only by default.
+  bool set_startup_aot_package(const AotPackage* package);
   void request_halt();
   void set_exception_mode(bool enabled) { exception_mode_ = enabled; }
 
@@ -84,6 +89,8 @@ private:
   std::uint32_t pending_target_ = 0;
   bool halt_requested_ = false;
   bool exception_mode_ = false;
+  const AotPackage* startup_aot_package_ = nullptr;
+  bool startup_aot_armed_ = false;
 };
 
 const char* stop_reason_name(StopReason reason);

@@ -23,6 +23,8 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   gif_.reset();
   vif1_.reset();
   image_ = load_elf32(data, size, memory_);
+  // Native title code is never inherited by the next ELF accidentally.
+  cpu_.set_startup_aot_package(nullptr);
   ee_cycles_until_iop_ = 8u;
   ready_ = image_.ok;
   if (ready_) { cpu_.reset(image_.entry); cpu_.set_exception_mode(false); }
@@ -35,6 +37,7 @@ bool Emulator::load_bios(const void* data, std::size_t size) {
 
 bool Emulator::boot_bios() {
   if (!memory_.has_bios()) return false;
+  cpu_.set_startup_aot_package(nullptr);
   memory_.clear();
   image_ = {};
   ready_ = true;

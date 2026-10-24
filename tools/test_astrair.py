@@ -16,7 +16,8 @@ from astrair.deopt import (
 )
 from astrair.ir import Effect, Op, UpperBits, ValueKind
 from generate_astrart import (
-    defer_gpr_writeback, generate, generate_trace_plan, select_direct_traces,
+    Function, defer_gpr_writeback, generate, generate_trace_plan,
+    select_direct_traces, split_for_event_horizon,
 )
 from make_aot_chain_elf import build as build_chain_elf
 from make_aot_memory_elf import elf as build_memory_elf
@@ -47,9 +48,19 @@ class AstraIrBuilderTests(unittest.TestCase):
             r_type(3, 4, 2, 0, 0x2D): Op.DADDU,
             r_type(3, 4, 2, 0, 0x2F): Op.DSUBU,
             r_type(3, 4, 2, 0, 0x18): Op.MULT,
+            r_type(3, 0, 0, 0, 0x11): Op.MTHI,
+            r_type(3, 0, 0, 0, 0x13): Op.MTLO,
+            r_type(3, 0, 0, 0, 0x11) | (0x1C << 26): Op.MTHI1,
+            r_type(3, 0, 0, 0, 0x13) | (0x1C << 26): Op.MTLO1,
+            i_type(0x01, 3, 0x19, 5): Op.MTSAH,
+            (0x11 << 26) | (0x04 << 21) | (5 << 16) | (7 << 11): Op.MTC1,
+            (0x11 << 26) | (0x06 << 21) | (5 << 16) | (7 << 11): Op.CTC1,
+            (0x11 << 26) | (0x10 << 21) | (5 << 16) | (7 << 11) | 0x18: Op.ADDA_S,
+            0x0000040F: Op.SYNC,
             r_type(3, 4, 2, 0x12, 0x09) | (0x1C << 26): Op.PAND,
             r_type(3, 4, 2, 0x13, 0x09) | (0x1C << 26): Op.PXOR,
             r_type(3, 4, 2, 0x12, 0x29) | (0x1C << 26): Op.POR,
+            r_type(3, 4, 2, 0x10, 0x28) | (0x1C << 26): Op.PADDUW,
             i_type(0x0C, 3, 2, 0x1234): Op.ANDI,
             i_type(0x0D, 3, 2, 0x1234): Op.ORI,
             i_type(0x0F, 0, 2, 0x1234): Op.LUI,
@@ -110,6 +121,8 @@ class AstraIrBuilderTests(unittest.TestCase):
              UpperBits.UNKNOWN),
             (r_type(3, 4, 2, 0x12, 0x09) | (0x1C << 26), 2,
              ValueKind.V128, UpperBits.UNKNOWN),
+            (r_type(3, 4, 2, 0x10, 0x28) | (0x1C << 26), 2,
+             ValueKind.V128, UpperBits.UNKNOWN),
             (i_type(0x2B, 3, 2, 4), 0, ValueKind.NONE,
              UpperBits.UNKNOWN),
         )
@@ -168,6 +181,36 @@ class AstraIrBuilderTests(unittest.TestCase):
         store = build_data_instruction(0x1000, i_type(0x2B, 3, 2, 4))
         self.assertEqual(store.reads, frozenset({2, 3}))
         self.assertEqual(store.writes, frozenset())
+
+    def test_accumulator_writes_read_source_without_clobbering_gpr(self) -> None:
+        for opcode in (0x11, 0x13):
+            for primary in (0, 0x1C):
+                word = r_type(3, 0, 0, 0, opcode) | (primary << 26)
+                instruction = build_data_instruction(0x1000, word)
+                self.assertEqual(instruction.reads, frozenset({3}))
+                self.assertEqual(instruction.writes, frozenset())
+
+    def test_mtsah_and_mtc1_read_sources_without_gpr_writes(self) -> None:
+        mtsah = build_data_instruction(0x1000, i_type(0x01, 3, 0x19, 5))
+        mtc1 = build_data_instruction(
+            0x1004, (0x11 << 26) | (0x04 << 21) | (5 << 16) | (7 << 11)
+        )
+        self.assertEqual(mtsah.reads, frozenset({3}))
+        self.assertEqual(mtsah.writes, frozenset())
+        self.assertEqual(mtc1.reads, frozenset({5}))
+        self.assertEqual(mtc1.writes, frozenset())
+
+    def test_cop1_control_and_accumulator_have_no_gpr_destinations(self) -> None:
+        control = build_data_instruction(
+            0x1000, (0x11 << 26) | (0x06 << 21) | (5 << 16) | (31 << 11)
+        )
+        accumulate = build_data_instruction(
+            0x1004, (0x11 << 26) | (0x10 << 21) | (1 << 16) | 0x18
+        )
+        self.assertEqual(control.reads, frozenset({5}))
+        self.assertEqual(control.writes, frozenset())
+        self.assertEqual(accumulate.reads, frozenset())
+        self.assertEqual(accumulate.writes, frozenset())
 
     def test_deferred_writeback_flushes_every_commit_path(self) -> None:
         source = [
@@ -396,6 +439,39 @@ class AstraIrBuilderTests(unittest.TestCase):
             path.write_bytes(elf)
             with self.assertRaisesRegex(ValueError, "guarded traces"):
                 generate([path], "trace-test", True, (guarded,))
+
+    def test_private_vita_package_guards_code_and_uses_separate_factory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "chain.elf"
+            path.write_bytes(build_chain_elf())
+            generated = generate(
+                [path], "private-title", factory_name="generated_private_game_aot_package",
+                guard_guest_code=True,
+            )
+        self.assertIn("memory.read32(0x00003000u) !=", generated)
+        self.assertIn("generated_private_game_aot_package()", generated)
+        self.assertNotIn("generated_phase0_aot_package()", generated)
+        self.assertIn("state.pc, 0u};", generated)
+        with self.assertRaisesRegex(ValueError, "identifier"):
+            generate([path], "private-title", factory_name="invalid.name")
+
+    def test_scheduler_splits_before_branch_not_in_its_delay_slot(self) -> None:
+        base = 0x1000
+        words = {base + 4 * index: 0 for index in range(12)}
+        # A branch at the eighth instruction must carry its delay slot into
+        # the next resume block instead of being cut after the branch.
+        words[base + 7 * 4] = i_type(0x04, 2, 3, 1)
+        blocks = split_for_event_horizon(
+            [Function(base, base + 9 * 4)], words, 8
+        )
+        self.assertEqual([(b.start, b.end, b.direct_fallthrough)
+                          for b in blocks], [
+            (base, base + 7 * 4, True),
+            (base + 7 * 4, base + 9 * 4, False),
+        ])
+        self.assertTrue(all((b.end - b.start) // 4 <= 8 for b in blocks))
+        with self.assertRaisesRegex(ValueError, "at least 2"):
+            split_for_event_horizon([Function(base, base + 8)], words, 1)
 
     def test_memory_delay_slot_is_a_trace_barrier(self) -> None:
         elf = build_memory_elf(0xA000, (
