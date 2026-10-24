@@ -28,8 +28,19 @@ def main() -> None:
     parser.add_argument("--branches", action="store_true")
     parser.add_argument("--branches-bne", action="store_true")
     parser.add_argument("--hot-scalars", action="store_true")
+    parser.add_argument("--byte-quad", action="store_true")
     args = parser.parse_args()
-    if args.hot_scalars:
+    if args.byte_quad:
+        # Redistributable R5900 SB/SQ oracle: SQ aligns down to 16 bytes and
+        # writes both halves of the 128-bit guest register.
+        payload = elf(0x9000, (
+            0x2403007F,  # addiu v1, zero, 127
+            0x24041003,  # addiu a0, zero, 0x1003 (intentionally unaligned)
+            0x7C830000,  # sq    v1, 0(a0) -> 0x1000 (align down)
+            0xA083000D,  # sb    v1, 13(a0) -> 0x1010
+            0x0000000D,  # break
+        ))
+    elif args.hot_scalars:
         payload = elf(0x8000, (
             0x3C02ABCD,  # lui   v0, 0xabcd
             0x34421234,  # ori   v0, v0, 0x1234

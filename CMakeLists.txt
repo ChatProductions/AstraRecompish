@@ -27,6 +27,7 @@ set(ASTRART_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(ASTRART_SMOKE_ELF "${ASTRART_GENERATED_DIR}/astrarecomp-smoke.elf")
 set(ASTRART_CHAIN_ELF "${ASTRART_GENERATED_DIR}/aot-chain.elf")
 set(ASTRART_MEMORY_ELF "${ASTRART_GENERATED_DIR}/aot-memory.elf")
+set(ASTRART_BYTE_QUAD_ELF "${ASTRART_GENERATED_DIR}/aot-byte-quad.elf")
 set(ASTRART_UNSUPPORTED_ELF "${ASTRART_GENERATED_DIR}/aot-unsupported.elf")
 set(ASTRART_BRANCH_ELF "${ASTRART_GENERATED_DIR}/aot-branch.elf")
 set(ASTRART_BNE_ELF "${ASTRART_GENERATED_DIR}/aot-bne.elf")
@@ -50,6 +51,7 @@ add_custom_command(
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_smoke_elf.py" "${ASTRART_SMOKE_ELF}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_chain_elf.py" "${ASTRART_CHAIN_ELF}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_memory_elf.py" "${ASTRART_MEMORY_ELF}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_memory_elf.py" --byte-quad "${ASTRART_BYTE_QUAD_ELF}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_memory_elf.py" --unsupported "${ASTRART_UNSUPPORTED_ELF}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_memory_elf.py" --branches "${ASTRART_BRANCH_ELF}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_memory_elf.py" --branches-bne "${ASTRART_BNE_ELF}"
@@ -60,7 +62,7 @@ add_custom_command(
           "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/make_aot_census.py"
           --output "${ASTRART_ORACLE_CENSUS}"
           "${ASTRART_SMOKE_ELF}" "${ASTRART_CHAIN_ELF}"
-          "${ASTRART_MEMORY_ELF}" "${ASTRART_UNSUPPORTED_ELF}"
+          "${ASTRART_MEMORY_ELF}" "${ASTRART_BYTE_QUAD_ELF}" "${ASTRART_UNSUPPORTED_ELF}"
           "${ASTRART_BRANCH_ELF}" "${ASTRART_BNE_ELF}"
           "${ASTRART_HOT_SCALAR_ELF}" "${ASTRART_BENCHMARK_ELF}"
   COMMAND "${CMAKE_COMMAND}" -E env PYTHONDONTWRITEBYTECODE=1
@@ -70,7 +72,7 @@ add_custom_command(
           --trace-plan-output "${ASTRART_TRACE_PLAN}"
           ${ASTRART_OPTIMIZATION_ARGS}
           "${ASTRART_SMOKE_ELF}" "${ASTRART_CHAIN_ELF}"
-          "${ASTRART_MEMORY_ELF}" "${ASTRART_UNSUPPORTED_ELF}"
+          "${ASTRART_MEMORY_ELF}" "${ASTRART_BYTE_QUAD_ELF}" "${ASTRART_UNSUPPORTED_ELF}"
           "${ASTRART_BRANCH_ELF}" "${ASTRART_BNE_ELF}"
           "${ASTRART_HOT_SCALAR_ELF}" "${ASTRART_BENCHMARK_ELF}"
   DEPENDS

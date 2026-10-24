@@ -306,6 +306,22 @@ def emit_data(lines: List[str], pc: int, word: int, indent: str = "  ",
             lines.append(
                 f"{indent}state.gpr[{rt}] = sign_extend_32(memory.read32({address}));"
             )
+    elif kind is Op.SB:
+        address = f"address_{pc:08x}"
+        lines.append(
+            f"{indent}const std::uint32_t {address} = static_cast<std::uint32_t>(state.gpr[{rs}]) + static_cast<std::uint32_t>({instruction.immediate});"
+        )
+        lines.append(
+            f"{indent}if (!memory.valid({address}, 1u)) {{"
+        )
+        lines.append(f"{indent}  commit(memory, state, executed, fast);")
+        lines.append(
+            f"{indent}  return {{AotExitKind::Interpreter, StopReason::None, state.pc, executed}};"
+        )
+        lines.append(f"{indent}}}")
+        lines.append(
+            f"{indent}memory.write8({address}, static_cast<std::uint8_t>(state.gpr[{rt}]));"
+        )
     elif kind is Op.SW:
         address = f"address_{pc:08x}"
         lines.append(
@@ -337,6 +353,19 @@ def emit_data(lines: List[str], pc: int, word: int, indent: str = "  ",
         lines.append(f"{indent}}}")
         if rt:
             lines.append(f"{indent}state.gpr[{rt}] = memory.read64({address});")
+    elif kind is Op.SQ:
+        address = f"address_{pc:08x}"
+        lines.append(
+            f"{indent}const std::uint32_t {address} = (static_cast<std::uint32_t>(state.gpr[{rs}]) + static_cast<std::uint32_t>({instruction.immediate})) & ~15u;"
+        )
+        lines.append(f"{indent}if (!memory.valid({address}, 16u)) {{")
+        lines.append(f"{indent}  commit(memory, state, executed, fast);")
+        lines.append(
+            f"{indent}  return {{AotExitKind::Interpreter, StopReason::None, state.pc, executed}};"
+        )
+        lines.append(f"{indent}}}")
+        lines.append(f"{indent}memory.write64({address}, state.gpr[{rt}]);")
+        lines.append(f"{indent}memory.write64({address} + 8u, state.gpr_hi[{rt}]);")
     elif kind is Op.SD:
         address = f"address_{pc:08x}"
         lines.append(

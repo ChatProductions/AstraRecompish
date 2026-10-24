@@ -57,6 +57,8 @@ class Op(Enum):
     SW = auto()
     LD = auto()
     SD = auto()
+    SB = auto()
+    SQ = auto()
 
 
 @dataclass(frozen=True)

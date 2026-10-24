@@ -15,7 +15,7 @@ _STORE_EFFECTS = (
 def effects_for(operation: Op) -> Effect:
     if operation in (Op.LW, Op.LD):
         return _LOAD_EFFECTS
-    if operation in (Op.SW, Op.SD):
+    if operation in (Op.SB, Op.SW, Op.SQ, Op.SD):
         return _STORE_EFFECTS
     return Effect.PURE
 

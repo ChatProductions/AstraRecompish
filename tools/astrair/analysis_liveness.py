@@ -11,7 +11,7 @@ _RS_RT_RD = {
     Op.PAND, Op.PXOR, Op.POR, Op.PADDUW,
 }
 _RS_RT = {Op.ADDIU, Op.ANDI, Op.ORI, Op.LW, Op.LD}
-_STORE = {Op.SW, Op.SD}
+_STORE = {Op.SB, Op.SW, Op.SQ, Op.SD}
 _ACCUMULATOR_WRITE = {Op.MTHI, Op.MTLO, Op.MTHI1, Op.MTLO1}
 
 

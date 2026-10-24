@@ -65,7 +65,9 @@ class AstraIrBuilderTests(unittest.TestCase):
             i_type(0x0D, 3, 2, 0x1234): Op.ORI,
             i_type(0x0F, 0, 2, 0x1234): Op.LUI,
             i_type(0x23, 3, 2, -4): Op.LW,
+            i_type(0x28, 3, 2, 1): Op.SB,
             i_type(0x2B, 3, 2, -4): Op.SW,
+            i_type(0x1F, 3, 2, -16): Op.SQ,
             i_type(0x37, 3, 2, -8): Op.LD,
             i_type(0x3F, 3, 2, -8): Op.SD,
         }
@@ -178,9 +180,25 @@ class AstraIrBuilderTests(unittest.TestCase):
         self.assertEqual(live[0].live_in, frozenset({4, 5, 6}))
 
     def test_store_reads_address_and_value_without_writing_gpr(self) -> None:
-        store = build_data_instruction(0x1000, i_type(0x2B, 3, 2, 4))
-        self.assertEqual(store.reads, frozenset({2, 3}))
-        self.assertEqual(store.writes, frozenset())
+        for primary in (0x28, 0x2B, 0x1F, 0x3F):
+            with self.subTest(primary=primary):
+                store = build_data_instruction(
+                    0x1000, i_type(primary, 3, 2, 4))
+                self.assertEqual(store.reads, frozenset({2, 3}))
+                self.assertEqual(store.writes, frozenset())
+                self.assertTrue(is_hard_barrier(store))
+
+    def test_generator_preserves_byte_store_and_aligned_quad_store(self) -> None:
+        from generate_astrart import emit_data
+        byte_lines = []
+        emit_data(byte_lines, 0x1000, i_type(0x28, 3, 2, -1))
+        self.assertIn("memory.write8(address_00001000, static_cast<std::uint8_t>(state.gpr[2]));", "\n".join(byte_lines))
+        self.assertIn("memory.valid(address_00001000, 1u)", "\n".join(byte_lines))
+        quad_lines = []
+        emit_data(quad_lines, 0x1004, i_type(0x1F, 3, 2, 7))
+        self.assertIn("& ~15u", "\n".join(quad_lines))
+        self.assertIn("memory.valid(address_00001004, 16u)", "\n".join(quad_lines))
+        self.assertIn("memory.write64(address_00001004 + 8u, state.gpr_hi[2]);", "\n".join(quad_lines))
 
     def test_accumulator_writes_read_source_without_clobbering_gpr(self) -> None:
         for opcode in (0x11, 0x13):

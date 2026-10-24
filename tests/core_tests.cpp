@@ -4653,6 +4653,44 @@ void test_phase0_aot_contract() {
             chain.interpreter_value == 42u && chain.aot_value == 42u,
         "Phase-0 chained paths return and store identical state");
 
+  // R5900 SQ aligns an unaligned effective address down to 16 bytes and
+  // stores the complete 128-bit register. SB must not disturb nearby bytes.
+  ps2vita::Memory byte_quad_interpreter_memory;
+  ps2vita::Memory byte_quad_native_memory;
+  for (std::uint32_t address = 0x1000u; address < 0x1011u; ++address) {
+    byte_quad_interpreter_memory.write8(address, 0xA5u);
+    byte_quad_native_memory.write8(address, 0xA5u);
+  }
+  constexpr std::uint32_t byte_quad_words[] = {
+      0x2403007Fu, 0x24041003u, 0x7C830000u, 0xA083000Du, 0x0000000Du};
+  for (unsigned index = 0; index < 5u; ++index)
+    byte_quad_interpreter_memory.write32(0x9000u + index * 4u,
+                                       byte_quad_words[index]);
+  ps2vita::Cpu byte_quad_interpreter(byte_quad_interpreter_memory);
+  byte_quad_interpreter.reset(0x9000u);
+  byte_quad_interpreter.state().gpr_hi[3] = 0x1122334455667788ull;
+  ps2vita::CpuState byte_quad_native{};
+  byte_quad_native.pc = 0x9000u;
+  byte_quad_native.gpr_hi[3] = 0x1122334455667788ull;
+  const auto byte_quad_stop = byte_quad_interpreter.run(8u);
+  const auto byte_quad_exit = ps2vita::dispatch_aot(
+      package, byte_quad_native_memory, byte_quad_native, 2u);
+  bool byte_quad_match = byte_quad_stop == ps2vita::StopReason::Break &&
+      byte_quad_exit.kind == ps2vita::AotExitKind::Stop &&
+      byte_quad_exit.reason == ps2vita::StopReason::Break &&
+      byte_quad_native.pc == byte_quad_interpreter.state().pc &&
+      byte_quad_native.cycles == byte_quad_interpreter.state().cycles &&
+      byte_quad_native.gpr == byte_quad_interpreter.state().gpr &&
+      byte_quad_native.gpr_hi == byte_quad_interpreter.state().gpr_hi;
+  for (std::uint32_t address = 0x1000u; address < 0x1011u; ++address)
+    byte_quad_match = byte_quad_match &&
+        byte_quad_interpreter_memory.read8(address) ==
+            byte_quad_native_memory.read8(address);
+  check(byte_quad_match && byte_quad_native_memory.read8(0x1000u) == 0x7Fu &&
+            byte_quad_native_memory.read64(0x1008u) == 0x1122334455667788ull &&
+            byte_quad_native_memory.read8(0x1010u) == 0x7Fu,
+        "R5900 native SQ/SB writes and complete CPU state match interpreter");
+
   const auto benchmark = ps2vita::run_phase0_aot_benchmark(nullptr, 16u, 1u);
   check(benchmark.matched,
         "fully translated performance workload matches interpreter state");

@@ -65,7 +65,9 @@ def build_data_instruction(pc: int, word: int) -> Optional[Instruction]:
             0x0D: Op.ORI,
             0x0F: Op.LUI,
             0x23: Op.LW,
+            0x28: Op.SB,
             0x2B: Op.SW,
+            0x1F: Op.SQ,
             0x37: Op.LD,
             0x3F: Op.SD,
         }.get(primary)

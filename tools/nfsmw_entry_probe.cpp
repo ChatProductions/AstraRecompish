@@ -121,6 +121,30 @@ int main(int argc, char** argv) {
               << " expected_fast=" << native.fast_path_instructions << '\n';
   }
 
+  // The first ten native dispatches are only a scheduler-bound prefix, not
+  // the extent of the game code. Probe beyond that boundary with a separate
+  // interpreter oracle, while leaving unsupported instructions to fallback.
+  const auto continuation = ps2vita::dispatch_aot(
+      package, native_memory, native, 64u);
+  const auto continuation_stop = interpreter.run(continuation.instructions);
+  const bool continuation_ok =
+      continuation_stop == ps2vita::StopReason::StepLimit &&
+      oracle.pc == native.pc && oracle.cycles == native.cycles &&
+      oracle.gpr == native.gpr && oracle.gpr_hi == native.gpr_hi &&
+      oracle.fpr == native.fpr && oracle.fcr == native.fcr &&
+      oracle.fpu_acc == native.fpu_acc &&
+      oracle.shift_amount == native.shift_amount &&
+      oracle.hi == native.hi && oracle.lo == native.lo &&
+      oracle.hi1 == native.hi1 && oracle.lo1 == native.lo1;
+  matched = matched && continuation_ok;
+  if (!continuation_ok) {
+    std::cerr << "continuation mismatch after " << continuation.instructions
+              << " native guest instructions, interpreter_stop="
+              << static_cast<int>(continuation_stop)
+              << " next_pc=0x" << std::hex << native.pc
+              << " oracle_pc=0x" << oracle.pc << std::dec << '\n';
+  }
+
   // A title build must not execute stale native instructions when the ELF in
   // ux0:data/ps2vita/boot.elf differs from the one used to compile it.
   auto altered = std::make_unique<ps2vita::Emulator>();
@@ -144,6 +168,9 @@ int main(int argc, char** argv) {
             << exit.instructions << " guest instructions, entry=0x"
             << std::hex << original.entry << ", fallback=0x" << native.pc
             << std::dec << ", integrated=" << (integrated_ok ? "PASS" : "FAIL")
+            << ", extended=" << (continuation_ok ? "PASS" : "FAIL")
+            << ", extra=" << continuation.instructions
+            << ", final_pc=0x" << std::hex << native.pc << std::dec
             << ", code-guard=" << (guard_ok ? "PASS" : "FAIL")
             << '\n';
   if (!matched) std::cerr << "guest state mismatch; do not use this package on Vita\n";
