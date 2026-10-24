@@ -121,6 +121,11 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     startup_heap_end_ = static_cast<std::uint32_t>(end);
     return true;
   }
+  case 0x64u: // FlushCache(mode)
+    // EE reads and writes in this runtime are already coherent: there is no
+    // separately modeled dirty D-cache or stale I-cache to synchronize.
+    // This is a semantic no-op, not a blanket skip for unknown syscalls.
+    return cpu_.retire_trapped_syscall(0u, false);
   default:
     return false; // Unknown kernel calls must remain visible in fault.txt.
   }

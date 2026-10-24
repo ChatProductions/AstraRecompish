@@ -47,7 +47,8 @@ std::vector<std::uint8_t> syscall_elf() {
   put32(image, 80, 16);
   put32(image, 0x100u, 0x0000000Cu); // SetupThread (from $v1)
   put32(image, 0x104u, 0x0000000Cu); // SetupHeap (from $v1)
-  put32(image, 0x108u, 0x0000000Du); // BREAK
+  put32(image, 0x108u, 0x0000000Cu); // FlushCache (from $v1)
+  put32(image, 0x10Cu, 0x0000000Du); // BREAK
   return image;
 }
 
@@ -91,6 +92,12 @@ int main() {
               emulator.cpu().state().cycles == 2u &&
               emulator.cpu().state().gpr[2] == 0x00500000u,
           "SetupHeap exposes the validated heap end and continues");
+  gpr[3] = 0x64u;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              emulator.cpu().state().pc == 0x100Cu &&
+              emulator.cpu().state().gpr[2] == 0x00500000u &&
+              emulator.cpu().state().cycles == 3u,
+          "FlushCache is coherent and preserves the void syscall's $v0");
   require(emulator.run_slice(1u) == ps2vita::StopReason::Break,
           "unknown execution stop reason is not swallowed by HLE");
 
@@ -120,7 +127,7 @@ int main() {
 
   emulator.reset();
   set_stack_args(emulator);
-  emulator.cpu().state().gpr[3] = 0x64u; // FlushCache is NOT yet emulated.
+  emulator.cpu().state().gpr[3] = 0x70u; // Unknown kernel service.
   require(emulator.run_slice(1u) == ps2vita::StopReason::Syscall &&
               emulator.cpu().state().pc == 0x1000u,
           "other kernel services are not silently skipped");
