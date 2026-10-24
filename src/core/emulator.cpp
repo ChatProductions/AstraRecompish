@@ -34,6 +34,8 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  intc_handlers_ = {};
+  dmac_handlers_ = {};
   guest_syscall_returns_ = {};
   guest_syscall_depth_ = 0u;
   ready_ = image_.ok;
@@ -57,6 +59,8 @@ bool Emulator::boot_bios() {
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  intc_handlers_ = {};
+  dmac_handlers_ = {};
   guest_syscall_returns_ = {};
   guest_syscall_depth_ = 0u;
   gif_.reset();
@@ -144,6 +148,63 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     // The game scans KSEG0 for the two registered function pointers,
     // 0xA4 bytes apart (0x83 - 0x5A syscall slots).
     memory_.write32(kBareElfSyscallTable + arg0 * 4u, arg1);
+    return true;
+  }
+  case 0x10u: // AddIntcHandler(cause, handler, position, arg)
+  case 0x12u: { // AddDmacHandler(channel, handler, position, arg)
+    const bool intc = number == 0x10u;
+    auto& handlers = intc ? intc_handlers_ : dmac_handlers_;
+    const auto limit = intc ? 15u : 10u;
+    // SDK position 0 prepends; -1 appends. Other chain positions would
+    // require a guest-visible interrupt dispatch ordering implementation.
+    const bool valid_position = arg2 == 0u || arg2 == UINT32_MAX;
+    if (arg0 >= limit || arg1 == 0u || (arg1 & 3u) != 0u ||
+        !memory_.instruction_reads_side_effect_free(arg1, 4u) ||
+        !valid_position)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    for (std::size_t i = 0; i < handlers.size(); ++i) {
+      if (handlers[i].address != 0u) continue;
+      if (!cpu_.retire_trapped_syscall(i + 1u)) return false;
+      handlers[i] = {arg1, arg0, static_cast<std::uint32_t>(state.gpr[28]),
+                     static_cast<std::uint32_t>(state.gpr[7]), arg2};
+      return true;
+    }
+    return cpu_.retire_trapped_syscall(UINT64_MAX);
+  }
+  case 0x11u: // RemoveIntcHandler(cause, handler_id)
+  case 0x13u: { // RemoveDmacHandler(channel, handler_id)
+    const bool intc = number == 0x11u;
+    auto& handlers = intc ? intc_handlers_ : dmac_handlers_;
+    if (arg0 >= (intc ? 15u : 10u) || arg1 == 0u ||
+        arg1 > handlers.size() || handlers[arg1 - 1u].address == 0u ||
+        handlers[arg1 - 1u].cause != arg0)
+      return cpu_.retire_trapped_syscall(UINT64_MAX);
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    handlers[arg1 - 1u] = {};
+    return true;
+  }
+  case 0x14u: // _EnableIntc(cause)
+  case 0x15u: { // _DisableIntc(cause)
+    if (arg0 >= 15u) return cpu_.retire_trapped_syscall(UINT64_MAX);
+    constexpr std::uint32_t kIntcMask = 0x1000F010u;
+    const auto bit = 1u << arg0;
+    const bool was_enabled = (memory_.read32(kIntcMask) & bit) != 0u;
+    const bool should_enable = number == 0x14u;
+    if (!cpu_.retire_trapped_syscall(was_enabled ? 1u : 0u)) return false;
+    // EE INTC_MASK is write-one-to-toggle, not a plain assignment.
+    if (was_enabled != should_enable) memory_.write32(kIntcMask, bit);
+    return true;
+  }
+  case 0x16u: // _EnableDmac(channel)
+  case 0x17u: { // _DisableDmac(channel)
+    if (arg0 >= 10u) return cpu_.retire_trapped_syscall(UINT64_MAX);
+    constexpr std::uint32_t kDmacStat = 0x1000E010u;
+    const auto bit = 1u << (arg0 + 16u);
+    const bool was_enabled = (memory_.read32(kDmacStat) & bit) != 0u;
+    const bool should_enable = number == 0x16u;
+    if (!cpu_.retire_trapped_syscall(was_enabled ? 1u : 0u)) return false;
+    // DMAC_STAT high-half bits also toggle on write.
+    if (was_enabled != should_enable) memory_.write32(kDmacStat, bit);
     return true;
   }
   case 0x3Cu: { // SetupThread(gp, stack_base, stack_size, args, root_func)
@@ -242,6 +303,8 @@ void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   kernel_semaphores_ = {};
+  intc_handlers_ = {};
+  dmac_handlers_ = {};
   // Reset does not zero all EE RAM; explicitly remove old kernel hooks.
   for (std::uint32_t i = 0; i < kBareElfSyscallSlots; ++i)
     memory_.write32(kBareElfSyscallTable + i * 4u, 0u);

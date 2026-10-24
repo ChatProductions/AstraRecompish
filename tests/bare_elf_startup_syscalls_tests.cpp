@@ -263,6 +263,59 @@ int main() {
               kernel_state.pc == 0x1000u,
           "out-of-range SetSyscall requests are not silently accepted");
 
+
+  // EE INTC source 11 is Timer 2. Registering a handler is meaningful even
+  // before we have Timer 2 event delivery; the returned ID must be stable.
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  constexpr std::uint32_t timer_handler = 0x1100u;
+  kernel_state.gpr[5] = timer_handler;
+  kernel_state.gpr[6] = 0u; // AddIntcHandler position: insert at front.
+  kernel_state.gpr[7] = 0x1200u;
+  require(invoke_kernel(0x10u, 11u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] >= 1u && kernel_state.gpr[2] <= 32u,
+          "AddIntcHandler registers Timer 2 callback and returns an ID");
+  const auto intc_id = static_cast<std::uint32_t>(kernel_state.gpr[2]);
+  require(invoke_kernel(0x14u, 11u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u &&
+              (emulator.memory().read32(0x1000F010u) & (1u << 11u)) != 0u,
+          "_EnableIntc toggles actual EE hardware mask and reports prior state");
+  require(invoke_kernel(0x14u, 11u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 1u &&
+              (emulator.memory().read32(0x1000F010u) & (1u << 11u)) != 0u,
+          "_EnableIntc is idempotent on already enabled source");
+  require(invoke_kernel(0x15u, 11u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 1u &&
+              (emulator.memory().read32(0x1000F010u) & (1u << 11u)) == 0u,
+          "_DisableIntc clears the physical mask without toggling twice");
+  kernel_state.gpr[5] = intc_id;
+  require(invoke_kernel(0x11u, 11u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "RemoveIntcHandler releases only the matching cause and ID");
+  require(invoke_kernel(0x11u, 11u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "removing the same INTC handler twice is rejected");
+  kernel_state.gpr[5] = 0x1100u;
+  kernel_state.gpr[6] = 0u;
+  require(invoke_kernel(0x12u, 2u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] >= 1u && kernel_state.gpr[2] <= 32u,
+          "AddDmacHandler allocates a bounded DMA callback");
+  const auto dmac_id = static_cast<std::uint32_t>(kernel_state.gpr[2]);
+  require(invoke_kernel(0x16u, 2u) == ps2vita::StopReason::StepLimit &&
+              (emulator.memory().read32(0x1000E010u) & (1u << 18u)) != 0u,
+          "_EnableDmac toggles the DMA hardware mask");
+  require(invoke_kernel(0x17u, 2u) == ps2vita::StopReason::StepLimit &&
+              (emulator.memory().read32(0x1000E010u) & (1u << 18u)) == 0u,
+          "_DisableDmac clears the DMA hardware mask");
+  kernel_state.gpr[5] = dmac_id;
+  require(invoke_kernel(0x13u, 2u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0u,
+          "RemoveDmacHandler releases the DMA callback");
+  kernel_state.gpr[5] = 0x1100u;
+  require(invoke_kernel(0x10u, 15u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "invalid INTC source cannot be registered");
+
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
 }

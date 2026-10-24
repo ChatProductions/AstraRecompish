@@ -76,6 +76,17 @@ private:
     std::int32_t maximum = 0;
   };
   std::array<KernelSemaphore, 64> kernel_semaphores_{};
+  // Kernel interrupt-handler registrations. Delivery needs the separately
+  // modeled EE timer/interrupt scheduler; registration alone never fires.
+  struct KernelInterruptHandler {
+    std::uint32_t address = 0;
+    std::uint32_t cause = 0;
+    std::uint32_t gp = 0;
+    std::uint32_t argument = 0;
+    std::uint32_t position = 0;
+  };
+  std::array<KernelInterruptHandler, 32> intc_handlers_{};
+  std::array<KernelInterruptHandler, 32> dmac_handlers_{};
   // SetSyscall entries live in guest-visible EE kernel RAM.
   // A bounded return stack preserves RA across guest callbacks.
   struct GuestSyscallReturn {
