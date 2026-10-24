@@ -1,0 +1,37 @@
+name: Build PS Vita VPK
+
+# Builds the general AstraRecomp Vita frontend. This does not embed the
+# privately supplied NFSMW game ELF or its game-specific translated code.
+on:
+  push:
+    branches:
+      - main
+      - nfsmw-ps2-startup-aot
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vita-vpk:
+    name: VitaSDK VPK
+    runs-on: ubuntu-24.04
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Configure VitaSDK build
+        run: |
+          cmake -S . -B build-vita \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+      - name: Compile native Vita VPK
+        run: cmake --build build-vita --target ps2vita.vpk --parallel 2
+      - name: Upload installable VPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraRecomp-Vita-VPK
+          path: build-vita/ps2vita.vpk
+          if-no-files-found: error
+          retention-days: 14
