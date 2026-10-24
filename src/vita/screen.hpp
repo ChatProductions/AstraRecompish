@@ -13,6 +13,8 @@ public:
   void present();
 
 private:
+  // Draw into pixels_ while front_ is displayed. Swap only on VBlank.
   std::uint32_t* pixels_ = nullptr;
+  std::uint32_t* front_ = nullptr;
   int memblock_ = -1;
 };
