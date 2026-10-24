@@ -190,7 +190,8 @@ bool read_file(const char* path, std::vector<std::uint8_t>& bytes) {
 void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
           const ps2vita::AotProbeResult& aot_probe,
           const ps2vita::AotProbeResult& aot_chain_probe,
-          const ps2vita::AotBenchmarkResult& benchmark, bool running,
+          const ps2vita::AotBenchmarkResult& benchmark, bool benchmark_ready,
+          bool running,
           bool show_gs, bool show_draw_target, ps2vita::GsLinearDisplayPreview& display_preview) {
   constexpr std::uint32_t bg = 0xFF100C18;
   constexpr std::uint32_t panel = 0xFF21182E;
@@ -275,16 +276,20 @@ void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
   screen.text(52, 316, line,
               aot_chain_probe.matched ? 0xFF6CFFB5 : accent, 2);
 
-  std::snprintf(line, sizeof(line), "AOT PERF: %s  %u.%02uX  %llu GUEST OPS",
-                benchmark.matched ? "PASS" : "FAIL",
-                benchmark.speedup_x100 / 100u, benchmark.speedup_x100 % 100u,
-                static_cast<unsigned long long>(benchmark.guest_instructions));
-  screen.text(52, 344, line, benchmark.matched ? 0xFF6CFFB5 : accent, 2);
+  if (benchmark_ready) {
+    std::snprintf(line, sizeof(line), "AOT PERF: %s  %u.%02uX  %llu GUEST OPS",
+                  benchmark.matched ? "PASS" : "FAIL",
+                  benchmark.speedup_x100 / 100u, benchmark.speedup_x100 % 100u,
+                  static_cast<unsigned long long>(benchmark.guest_instructions));
+    screen.text(52, 344, line, benchmark.matched ? 0xFF6CFFB5 : accent, 2);
+  } else {
+    screen.text(52, 344, "AOT PERF: NOT RUN / L TO START", dim, 2);
+  }
 
   screen.text(38, 387, "CROSS  RUN / PAUSE", ink, 2);
   screen.text(38, 419, "SQUARE STEP    TRIANGLE RELOAD", ink, 2);
   screen.text(38, 451, "CIRCLE BIOS   R GS VIEW   START RESET", ink, 2);
-  screen.text(38, 503, "BENCHMARK.TXT / VITA3K CORRECTNESS GATE", dim, 2);
+  screen.text(38, 503, "L PERF TEST    SELECT EXIT", dim, 2);
   screen.present();
 }
 }
@@ -301,12 +306,11 @@ int main() {
   ps2vita::Emulator emulator;
   const auto aot_probe = ps2vita::run_phase0_aot_probe();
   const auto aot_chain_probe = ps2vita::run_phase0_aot_chain_probe();
-  write_probe("running AOT performance validation\n");
-  const auto benchmark = ps2vita::run_phase0_aot_benchmark(
-      benchmark_clock_microseconds, 4096u, 5u);
-  write_benchmark(benchmark);
-  write_probe(benchmark.matched ? "AOT benchmark passed\n" :
-                                  "AOT benchmark failed\n");
+  // Keep the first UI frame independent of the expensive interpreter-vs-AOT
+  // benchmark. Physical Vita startup must stay responsive even if profiling
+  // stalls or is much slower than the host. L runs a smaller optional sample.
+  ps2vita::AotBenchmarkResult benchmark{};
+  bool benchmark_ready = false;
   std::vector<std::uint8_t> image;
   char message[96];
   std::snprintf(message, sizeof(message), "PHASE-0 AOT %s / I=%u A=%u",
@@ -344,6 +348,8 @@ int main() {
     running = true;
     std::snprintf(message, sizeof(message), "BIOS AUTOLOADED / RUNNING");
   }
+  write_probe("monitor loop ready\n");
+  bool first_frame_presented = false;
 
   while (true) {
     SceCtrlData pad{};
@@ -354,6 +360,21 @@ int main() {
     if (pressed & SCE_CTRL_SELECT) break;
     if (pressed & SCE_CTRL_RTRIGGER) show_gs = !show_gs;
     if (show_gs && (pressed & SCE_CTRL_LTRIGGER)) show_draw_target = !show_draw_target;
+    if (!show_gs && !running && (pressed & SCE_CTRL_LTRIGGER)) {
+      std::snprintf(message, sizeof(message), "AOT BENCHMARK RUNNING / PLEASE WAIT");
+      draw(screen, emulator, message, aot_probe, aot_chain_probe,
+           benchmark, benchmark_ready, running, show_gs, show_draw_target,
+           display_preview);
+      write_probe("optional AOT benchmark started\n");
+      benchmark = ps2vita::run_phase0_aot_benchmark(
+          benchmark_clock_microseconds, 256u, 3u);
+      benchmark_ready = true;
+      write_benchmark(benchmark);
+      write_probe(benchmark.matched ? "optional AOT benchmark passed\n" :
+                                      "optional AOT benchmark failed\n");
+      std::snprintf(message, sizeof(message), "AOT BENCHMARK %s",
+                    benchmark.matched ? "PASSED" : "FAILED");
+    }
     if (pressed & SCE_CTRL_TRIANGLE) {
       running = false;
       image.clear();
@@ -429,8 +450,13 @@ int main() {
         std::snprintf(message, sizeof(message), "STOPPED: %s", ps2vita::stop_reason_name(reason));
       }
     }
-    draw(screen, emulator, message, aot_probe, aot_chain_probe, benchmark,
-         running, show_gs, show_draw_target, display_preview);
+    draw(screen, emulator, message, aot_probe, aot_chain_probe,
+         benchmark, benchmark_ready, running, show_gs, show_draw_target,
+         display_preview);
+    if (!first_frame_presented) {
+      write_probe("first monitor frame presented\n");
+      first_frame_presented = true;
+    }
   }
 
   screen.shutdown();
