@@ -33,7 +33,7 @@ def main() -> None:
     if args.byte_quad:
         # Redistributable R5900 SB/SQ oracle: SQ aligns down to 16 bytes and
         # writes both halves of the 128-bit guest register.
-        payload = elf(0x9000, (
+        payload = elf(0xB000, (
             0x2403007F,  # addiu v1, zero, 127
             0x24041003,  # addiu a0, zero, 0x1003 (intentionally unaligned)
             0x7C830000,  # sq    v1, 0(a0) -> 0x1000 (align down)

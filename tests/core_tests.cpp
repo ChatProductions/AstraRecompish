@@ -4664,13 +4664,13 @@ void test_phase0_aot_contract() {
   constexpr std::uint32_t byte_quad_words[] = {
       0x2403007Fu, 0x24041003u, 0x7C830000u, 0xA083000Du, 0x0000000Du};
   for (unsigned index = 0; index < 5u; ++index)
-    byte_quad_interpreter_memory.write32(0x9000u + index * 4u,
+    byte_quad_interpreter_memory.write32(0xB000u + index * 4u,
                                        byte_quad_words[index]);
   ps2vita::Cpu byte_quad_interpreter(byte_quad_interpreter_memory);
-  byte_quad_interpreter.reset(0x9000u);
+  byte_quad_interpreter.reset(0xB000u);
   byte_quad_interpreter.state().gpr_hi[3] = 0x1122334455667788ull;
   ps2vita::CpuState byte_quad_native{};
-  byte_quad_native.pc = 0x9000u;
+  byte_quad_native.pc = 0xB000u;
   byte_quad_native.gpr_hi[3] = 0x1122334455667788ull;
   const auto byte_quad_stop = byte_quad_interpreter.run(8u);
   const auto byte_quad_exit = ps2vita::dispatch_aot(
