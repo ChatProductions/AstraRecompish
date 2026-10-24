@@ -33,7 +33,7 @@ def registers_for(operation: Op, rs: int, rt: int, rd: int
         reads.add(rs)
     elif operation is Op.MTSAH:
         reads.add(rs)
-    elif operation is Op.MTC1:
+    elif operation in (Op.MTC1, Op.CTC1):
         reads.add(rt)
     reads.discard(0)
     writes.discard(0)

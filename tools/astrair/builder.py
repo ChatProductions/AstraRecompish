@@ -28,6 +28,7 @@ def build_data_instruction(pc: int, word: int) -> Optional[Instruction]:
         kind = Op.ADDIU
     elif primary == 0x00:
         kind = {
+            0x0F: Op.SYNC,
             0x18: Op.MULT,
             0x11: Op.MTHI,
             0x13: Op.MTLO,
@@ -43,6 +44,12 @@ def build_data_instruction(pc: int, word: int) -> Optional[Instruction]:
     elif primary == 0x11 and rs == 0x04:
         # COP1 MTC1 transfers the low GPR word to FPR[rd].
         kind = Op.MTC1
+    elif primary == 0x11 and rs == 0x06:
+        # COP1 CTC1 transfers the low GPR word to FCR[rd].
+        kind = Op.CTC1
+    elif primary == 0x11 and rs == 0x10 and function == 0x18:
+        # EE scalar ADDA.S accumulates FPR[rd] + FPR[rt] into the FPU ACC.
+        kind = Op.ADDA_S
     elif primary == 0x1C:
         kind = {
             (0x09, 0x12): Op.PAND,

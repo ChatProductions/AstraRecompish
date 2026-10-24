@@ -14,6 +14,12 @@
 #include <cstring>
 #include <vector>
 
+#if defined(PS2VITA_PRIVATE_GAME_AOT)
+namespace ps2vita {
+const AotPackage& generated_private_game_aot_package();
+}
+#endif
+
 namespace {
 constexpr const char* kBootPath = "ux0:data/ps2vita/boot.elf";
 constexpr const char* kBiosPath = "ux0:data/ps2vita/bios.bin";
@@ -360,6 +366,14 @@ int main() {
       } else {
         const auto result = emulator.load_elf(image.data(), image.size());
         reset_progress();
+#if defined(PS2VITA_PRIVATE_GAME_AOT)
+        if (result.ok && loaded_external) {
+          const bool enabled = emulator.cpu().set_startup_aot_package(
+              &ps2vita::generated_private_game_aot_package());
+          write_probe(enabled ? "private title startup AOT armed\n" :
+                                "private title AOT validation failed\n");
+        }
+#endif
         if (result.ok) std::snprintf(message, sizeof(message), "%s / ENTRY %08X",
             loaded_external ? "EXTERNAL ELF LOADED" : "BUILT-IN TEST LOADED", result.entry);
         else std::snprintf(message, sizeof(message), "LOAD ERROR: %s", result.error);

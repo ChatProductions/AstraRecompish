@@ -13,6 +13,9 @@ option(ASTRART_DIRECT_TRACES
 # Optional privately supplied PS2 ELF. No retail binary or its translated code
 # is included in the source tree or ordinary release builds.
 set(ASTRART_GAME_ELF "" CACHE FILEPATH "Local PS2 ELF for host-only startup differential probe")
+# Strictly opt-in, locally generated title code for personal Vita builds.
+# The ELF and generated C++ remain in the user's local build directory.
+set(ASTRART_PRIVATE_VITA_ELF "" CACHE FILEPATH "Local ELF for a private Vita title-specific AOT experiment")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -143,6 +146,28 @@ if(VITA)
     SceSysmem_stub
   )
 
+  if(ASTRART_PRIVATE_VITA_ELF)
+    if(NOT EXISTS "${ASTRART_PRIVATE_VITA_ELF}")
+      message(FATAL_ERROR "ASTRART_PRIVATE_VITA_ELF does not exist: ${ASTRART_PRIVATE_VITA_ELF}")
+    endif()
+    set(ASTRART_PRIVATE_VITA_AOT "${CMAKE_CURRENT_BINARY_DIR}/private-title/private_aot.cpp")
+    add_custom_command(
+      OUTPUT "${ASTRART_PRIVATE_VITA_AOT}"
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_astrart.py"
+              --output "${ASTRART_PRIVATE_VITA_AOT}"
+              --package-name "private-vita-startup"
+              --factory-name "generated_private_game_aot_package"
+              --guard-guest-code --defer-gpr-writeback
+              --max-block-instructions 8
+              "${ASTRART_PRIVATE_VITA_ELF}"
+      DEPENDS "${ASTRART_PRIVATE_VITA_ELF}" tools/generate_astrart.py
+              tools/astrair/builder.py tools/astrair/ir.py
+      VERBATIM
+    )
+    target_sources(ps2vita PRIVATE "${ASTRART_PRIVATE_VITA_AOT}")
+    target_compile_definitions(ps2vita PRIVATE PS2VITA_PRIVATE_GAME_AOT=1)
+  endif()
+
   vita_create_self(ps2vita.self ps2vita UNSAFE)
   vita_create_vpk(ps2vita.vpk ${VITA_TITLEID} ps2vita.self
     VERSION ${VITA_VERSION}
@@ -159,6 +184,7 @@ else()
       OUTPUT "${ASTRART_GAME_AOT}"
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_astrart.py"
               --output "${ASTRART_GAME_AOT}" --package-name "private-game-entry"
+              --guard-guest-code --max-block-instructions 8
               "${ASTRART_GAME_ELF}"
       DEPENDS "${ASTRART_GAME_ELF}" tools/generate_astrart.py
               tools/astrair/builder.py tools/astrair/ir.py

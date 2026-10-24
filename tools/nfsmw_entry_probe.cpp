@@ -3,6 +3,7 @@
 #include "ps2vita/aot.hpp"
 #include "ps2vita/cpu.hpp"
 #include "ps2vita/elf_loader.hpp"
+#include "ps2vita/emulator.hpp"
 #include "ps2vita/memory.hpp"
 
 #include <array>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <memory>
 #include <vector>
 
 int main(int argc, char** argv) {
@@ -53,8 +55,10 @@ int main(int argc, char** argv) {
   oracle.hi1 = native.hi1 = 0x55556666u;
   oracle.lo1 = native.lo1 = 0x77778888u;
   oracle.shift_amount = native.shift_amount = 6;
+  oracle.fpu_acc = native.fpu_acc = 0x40000000u;
   for (unsigned index = 0; index < 32; ++index) {
     oracle.fpr[index] = native.fpr[index] = 0x3f800000u + index;
+    oracle.fcr[index] = native.fcr[index] = 0x12340000u + index;
   }
 
   const auto package = ps2vita::generated_phase0_aot_package();
@@ -62,13 +66,19 @@ int main(int argc, char** argv) {
     std::cerr << "generated native package failed validation\n";
     return 2;
   }
-  if (package.entry_count != 1 || package.entries[0].guest_start != original.entry) {
-    std::cerr << "expected one native entry at PS2 ELF entry PC\n";
+  if (!ps2vita::find_aot_function(package, original.entry)) {
+    std::cerr << "PS2 ELF entry PC missing from generated native package\n";
     return 2;
   }
-  const auto exit = ps2vita::execute_aot(package, native_memory, native);
-  if (exit.kind != ps2vita::AotExitKind::Interpreter || !exit.instructions) {
-    std::cerr << "native package did not yield to interpreter safely\n";
+  const ps2vita::CpuState startup_state = native;
+  // The device scheduler yields every eight EE cycles. A startup sequence
+  // must therefore resume across multiple small native dispatches.
+  const auto exit = ps2vita::dispatch_aot(package, native_memory, native, 10u);
+  if ((exit.kind != ps2vita::AotExitKind::Interpreter &&
+       exit.kind != ps2vita::AotExitKind::Direct) ||
+      exit.instructions != 76u) {
+    std::cerr << "native package did not complete 76 startup instructions"
+              << " (completed " << exit.instructions << ")\n";
     return 1;
   }
   const auto stop = interpreter.run(exit.instructions);
@@ -79,12 +89,63 @@ int main(int argc, char** argv) {
       oracle.lo == native.lo && oracle.hi1 == native.hi1 &&
       oracle.lo1 == native.lo1 &&
       oracle.shift_amount == native.shift_amount &&
-      oracle.fpr == native.fpr;
+      oracle.fpr == native.fpr &&
+      oracle.fcr == native.fcr &&
+      oracle.fpu_acc == native.fpu_acc;
+
+  // The real Emulator::run_slice path must actually dispatch native code,
+  // not merely work when a test calls execute_aot directly.
+  auto emulator = std::make_unique<ps2vita::Emulator>();
+  const auto loaded = emulator->load_elf(image.data(), image.size());
+  if (!loaded.ok || loaded.entry != original.entry ||
+      !emulator->cpu().set_startup_aot_package(&package)) {
+    std::cerr << "could not prepare opt-in emulator startup AOT\n";
+    return 2;
+  }
+  emulator->cpu().state() = startup_state;
+  const auto integrated_reason = emulator->run_slice(exit.instructions);
+  const auto& integrated = emulator->cpu().state();
+  const bool integrated_ok = integrated_reason == ps2vita::StopReason::StepLimit &&
+      integrated.fast_path_instructions == native.fast_path_instructions &&
+      integrated.gpr == oracle.gpr && integrated.gpr_hi == oracle.gpr_hi &&
+      integrated.fpr == oracle.fpr && integrated.fcr == oracle.fcr &&
+      integrated.fpu_acc == oracle.fpu_acc && integrated.pc == oracle.pc &&
+      integrated.cycles == oracle.cycles;
+  matched = matched && integrated_ok;
+  if (!integrated_ok) {
+    std::cerr << "integrated: reason=" << static_cast<int>(integrated_reason)
+              << " fast=" << integrated.fast_path_instructions
+              << " cycles=" << integrated.cycles
+              << " pc=0x" << std::hex << integrated.pc
+              << " expected_pc=0x" << oracle.pc << std::dec
+              << " expected_fast=" << native.fast_path_instructions << '\n';
+  }
+
+  // A title build must not execute stale native instructions when the ELF in
+  // ux0:data/ps2vita/boot.elf differs from the one used to compile it.
+  auto altered = std::make_unique<ps2vita::Emulator>();
+  const auto altered_load = altered->load_elf(image.data(), image.size());
+  if (!altered_load.ok ||
+      !altered->cpu().set_startup_aot_package(&package)) {
+    std::cerr << "cannot prepare code-identity fallback check\n";
+    return 2;
+  }
+  altered->cpu().state() = startup_state;
+  altered->memory().write32(original.entry + 4u, 0u); // Legal MIPS NOP.
+  const auto altered_stop = altered->run_slice(8u);
+  const bool guard_ok = altered_stop == ps2vita::StopReason::StepLimit &&
+      altered->cpu().state().fast_path_instructions == 0u &&
+      altered->cpu().state().cycles == 8u;
+  if (!guard_ok)
+    std::cerr << "mismatched game code did not deopt to interpreter\n";
+  matched = matched && guard_ok;
 
   std::cout << (matched ? "PASS" : "FAIL") << ": native vs interpreter "
             << exit.instructions << " guest instructions, entry=0x"
             << std::hex << original.entry << ", fallback=0x" << native.pc
-            << std::dec << '\n';
+            << std::dec << ", integrated=" << (integrated_ok ? "PASS" : "FAIL")
+            << ", code-guard=" << (guard_ok ? "PASS" : "FAIL")
+            << '\n';
   if (!matched) std::cerr << "guest state mismatch; do not use this package on Vita\n";
   return matched ? 0 : 1;
 }
