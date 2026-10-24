@@ -27,7 +27,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
       - name: Compile native Vita VPK
-        run: cmake --build build-vita --target ps2vita.vpk --parallel 2
+        run: cmake --build build-vita --parallel 2
       - name: Upload installable VPK
         uses: actions/upload-artifact@v4
         with:
