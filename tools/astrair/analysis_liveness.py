@@ -8,10 +8,11 @@ from .ir import Instruction, Op
 
 _RS_RT_RD = {
     Op.ADDU, Op.AND, Op.SLTU, Op.DADDU, Op.DSUBU, Op.MULT,
-    Op.PAND, Op.PXOR, Op.POR,
+    Op.PAND, Op.PXOR, Op.POR, Op.PADDUW,
 }
 _RS_RT = {Op.ADDIU, Op.ANDI, Op.ORI, Op.LW, Op.LD}
 _STORE = {Op.SW, Op.SD}
+_ACCUMULATOR_WRITE = {Op.MTHI, Op.MTLO, Op.MTHI1, Op.MTLO1}
 
 
 def registers_for(operation: Op, rs: int, rt: int, rd: int
@@ -28,6 +29,12 @@ def registers_for(operation: Op, rs: int, rt: int, rd: int
         writes.add(rt)
     elif operation in _STORE:
         reads.update((rs, rt))
+    elif operation in _ACCUMULATOR_WRITE:
+        reads.add(rs)
+    elif operation is Op.MTSAH:
+        reads.add(rs)
+    elif operation is Op.MTC1:
+        reads.add(rt)
     reads.discard(0)
     writes.discard(0)
     return frozenset(reads), frozenset(writes)

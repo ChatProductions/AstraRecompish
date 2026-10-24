@@ -205,6 +205,22 @@ def emit_data(lines: List[str], pc: int, word: int, indent: str = "  ",
         )
         if rd:
             lines.append(f"{indent}state.gpr[{rd}] = state.lo;")
+    elif kind in (Op.MTHI, Op.MTLO, Op.MTHI1, Op.MTLO1):
+        accumulator = {
+            Op.MTHI: "hi",
+            Op.MTLO: "lo",
+            Op.MTHI1: "hi1",
+            Op.MTLO1: "lo1",
+        }[kind]
+        lines.append(f"{indent}state.{accumulator} = state.gpr[{rs}];")
+    elif kind is Op.MTSAH:
+        lines.append(
+            f"{indent}state.shift_amount = ((static_cast<std::uint32_t>(state.gpr[{rs}]) & 7u) ^ {word & 7}u) << 1;"
+        )
+    elif kind is Op.MTC1:
+        lines.append(
+            f"{indent}state.fpr[{rd}] = static_cast<std::uint32_t>(state.gpr[{rt}]);"
+        )
     elif kind in (Op.PAND, Op.PXOR, Op.POR):
         operation = {
             Op.PAND: "&",
@@ -217,6 +233,14 @@ def emit_data(lines: List[str], pc: int, word: int, indent: str = "  ",
             )
             lines.append(
                 f"{indent}state.gpr_hi[{rd}] = state.gpr_hi[{rs}] {operation} state.gpr_hi[{rt}];"
+            )
+    elif kind is Op.PADDUW:
+        if rd:
+            lines.append(
+                f"{indent}state.gpr[{rd}] = packed_adduw(state.gpr[{rs}], state.gpr[{rt}]);"
+            )
+            lines.append(
+                f"{indent}state.gpr_hi[{rd}] = packed_adduw(state.gpr_hi[{rs}], state.gpr_hi[{rt}]);"
             )
     elif kind is Op.ANDI:
         if rt:
@@ -626,6 +650,13 @@ def generate(paths: List[Path], package_name: str,
         "namespace {",
         "std::uint64_t sign_extend_32(std::uint32_t value) {",
         "  return static_cast<std::uint64_t>(static_cast<std::int64_t>(static_cast<std::int32_t>(value)));",
+        "}",
+        "std::uint64_t packed_adduw(std::uint64_t lhs, std::uint64_t rhs) {",
+        "  const auto low = (lhs & 0xffffffffull) + (rhs & 0xffffffffull);",
+        "  const auto high = (lhs >> 32) + (rhs >> 32);",
+        "  const auto saturated_low = low > 0xffffffffull ? 0xffffffffull : low;",
+        "  const auto saturated_high = high > 0xffffffffull ? 0xffffffffull : high;",
+        "  return saturated_low | (saturated_high << 32);",
         "}",
         "void commit(Memory& memory, CpuState& state, std::uint32_t executed, std::uint32_t fast) {",
         "  state.gpr[0] = 0;",

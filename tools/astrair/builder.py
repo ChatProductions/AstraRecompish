@@ -29,17 +29,28 @@ def build_data_instruction(pc: int, word: int) -> Optional[Instruction]:
     elif primary == 0x00:
         kind = {
             0x18: Op.MULT,
+            0x11: Op.MTHI,
+            0x13: Op.MTLO,
             0x21: Op.ADDU,
             0x24: Op.AND,
             0x2B: Op.SLTU,
             0x2D: Op.DADDU,
             0x2F: Op.DSUBU,
         }.get(function)
+    elif primary == 0x01 and rt == 0x19:
+        # R5900 MTSAH, not a REGIMM conditional branch.
+        kind = Op.MTSAH
+    elif primary == 0x11 and rs == 0x04:
+        # COP1 MTC1 transfers the low GPR word to FPR[rd].
+        kind = Op.MTC1
     elif primary == 0x1C:
         kind = {
             (0x09, 0x12): Op.PAND,
             (0x09, 0x13): Op.PXOR,
             (0x29, 0x12): Op.POR,
+            (0x28, 0x10): Op.PADDUW,
+            (0x11, 0): Op.MTHI1,
+            (0x13, 0): Op.MTLO1,
         }.get((function, sub))
     else:
         kind = {

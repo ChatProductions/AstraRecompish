@@ -10,6 +10,9 @@ option(ASTRART_DEFER_GPR_WRITEBACK
        "Cache low GPRs and flush dirty values at generated exits" ON)
 option(ASTRART_DIRECT_TRACES
        "Enable fingerprint-bound guard-free direct trace wrappers" OFF)
+# Optional privately supplied PS2 ELF. No retail binary or its translated code
+# is included in the source tree or ordinary release builds.
+set(ASTRART_GAME_ELF "" CACHE FILEPATH "Local PS2 ELF for host-only startup differential probe")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -147,6 +150,27 @@ if(VITA)
   )
 else()
   enable_testing()
+  if(ASTRART_GAME_ELF)
+    if(NOT EXISTS "${ASTRART_GAME_ELF}")
+      message(FATAL_ERROR "ASTRART_GAME_ELF does not exist: ${ASTRART_GAME_ELF}")
+    endif()
+    set(ASTRART_GAME_AOT "${CMAKE_CURRENT_BINARY_DIR}/game-private/game_startup_aot.cpp")
+    add_custom_command(
+      OUTPUT "${ASTRART_GAME_AOT}"
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_astrart.py"
+              --output "${ASTRART_GAME_AOT}" --package-name "private-game-entry"
+              "${ASTRART_GAME_ELF}"
+      DEPENDS "${ASTRART_GAME_ELF}" tools/generate_astrart.py
+              tools/astrair/builder.py tools/astrair/ir.py
+      VERBATIM
+    )
+    add_executable(nfsmw_entry_probe
+      tools/nfsmw_entry_probe.cpp "${ASTRART_GAME_AOT}")
+    target_include_directories(nfsmw_entry_probe PRIVATE include)
+    target_link_libraries(nfsmw_entry_probe PRIVATE ps2core)
+    add_test(NAME nfsmw_entry_probe
+      COMMAND nfsmw_entry_probe "${ASTRART_GAME_ELF}")
+  endif()
   add_executable(ps2core_tests tests/core_tests.cpp)
   target_link_libraries(ps2core_tests PRIVATE ps2core)
   add_executable(cpu_dispatch_tests tests/cpu_dispatch_tests.cpp)

@@ -47,9 +47,16 @@ class AstraIrBuilderTests(unittest.TestCase):
             r_type(3, 4, 2, 0, 0x2D): Op.DADDU,
             r_type(3, 4, 2, 0, 0x2F): Op.DSUBU,
             r_type(3, 4, 2, 0, 0x18): Op.MULT,
+            r_type(3, 0, 0, 0, 0x11): Op.MTHI,
+            r_type(3, 0, 0, 0, 0x13): Op.MTLO,
+            r_type(3, 0, 0, 0, 0x11) | (0x1C << 26): Op.MTHI1,
+            r_type(3, 0, 0, 0, 0x13) | (0x1C << 26): Op.MTLO1,
+            i_type(0x01, 3, 0x19, 5): Op.MTSAH,
+            (0x11 << 26) | (0x04 << 21) | (5 << 16) | (7 << 11): Op.MTC1,
             r_type(3, 4, 2, 0x12, 0x09) | (0x1C << 26): Op.PAND,
             r_type(3, 4, 2, 0x13, 0x09) | (0x1C << 26): Op.PXOR,
             r_type(3, 4, 2, 0x12, 0x29) | (0x1C << 26): Op.POR,
+            r_type(3, 4, 2, 0x10, 0x28) | (0x1C << 26): Op.PADDUW,
             i_type(0x0C, 3, 2, 0x1234): Op.ANDI,
             i_type(0x0D, 3, 2, 0x1234): Op.ORI,
             i_type(0x0F, 0, 2, 0x1234): Op.LUI,
@@ -110,6 +117,8 @@ class AstraIrBuilderTests(unittest.TestCase):
              UpperBits.UNKNOWN),
             (r_type(3, 4, 2, 0x12, 0x09) | (0x1C << 26), 2,
              ValueKind.V128, UpperBits.UNKNOWN),
+            (r_type(3, 4, 2, 0x10, 0x28) | (0x1C << 26), 2,
+             ValueKind.V128, UpperBits.UNKNOWN),
             (i_type(0x2B, 3, 2, 4), 0, ValueKind.NONE,
              UpperBits.UNKNOWN),
         )
@@ -168,6 +177,24 @@ class AstraIrBuilderTests(unittest.TestCase):
         store = build_data_instruction(0x1000, i_type(0x2B, 3, 2, 4))
         self.assertEqual(store.reads, frozenset({2, 3}))
         self.assertEqual(store.writes, frozenset())
+
+    def test_accumulator_writes_read_source_without_clobbering_gpr(self) -> None:
+        for opcode in (0x11, 0x13):
+            for primary in (0, 0x1C):
+                word = r_type(3, 0, 0, 0, opcode) | (primary << 26)
+                instruction = build_data_instruction(0x1000, word)
+                self.assertEqual(instruction.reads, frozenset({3}))
+                self.assertEqual(instruction.writes, frozenset())
+
+    def test_mtsah_and_mtc1_read_sources_without_gpr_writes(self) -> None:
+        mtsah = build_data_instruction(0x1000, i_type(0x01, 3, 0x19, 5))
+        mtc1 = build_data_instruction(
+            0x1004, (0x11 << 26) | (0x04 << 21) | (5 << 16) | (7 << 11)
+        )
+        self.assertEqual(mtsah.reads, frozenset({3}))
+        self.assertEqual(mtsah.writes, frozenset())
+        self.assertEqual(mtc1.reads, frozenset({5}))
+        self.assertEqual(mtc1.writes, frozenset())
 
     def test_deferred_writeback_flushes_every_commit_path(self) -> None:
         source = [

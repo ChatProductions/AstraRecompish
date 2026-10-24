@@ -19,7 +19,7 @@ def result_for(operation: Op, rt: int, rd: int) -> Tuple[int, ValueKind, UpperBi
         return rt, ValueKind.U64, UpperBits.UNKNOWN
     if operation in (Op.AND, Op.DADDU, Op.DSUBU):
         return rd, ValueKind.U64, UpperBits.UNKNOWN
-    if operation in (Op.PAND, Op.PXOR, Op.POR):
+    if operation in (Op.PAND, Op.PXOR, Op.POR, Op.PADDUW):
         return rd, ValueKind.V128, UpperBits.UNKNOWN
     return 0, ValueKind.NONE, UpperBits.UNKNOWN
 

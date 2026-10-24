@@ -445,6 +445,11 @@ StopReason Cpu::execute(std::uint32_t ins, std::uint32_t pc,
     break;
 
   case 0x01: { // REGIMM
+    if (rt == 0x19) { // R5900 MTSAH (not a branch).
+      state_.shift_amount = ((static_cast<std::uint32_t>(rsv) & 7u) ^
+                             (ins & 7u)) << 1;
+      break;
+    }
     const auto signed_rs = static_cast<std::int64_t>(rsv);
     bool take = false;
     bool likely = false;
