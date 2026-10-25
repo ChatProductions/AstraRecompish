@@ -90,13 +90,53 @@ def branch_target(pc: int, word: int) -> int:
     return (pc + 4 + (sx16(word) << 2)) & 0xFFFFFFFF
 
 
-def discover(entries: Iterable[int], words: Dict[int, int]) -> List[Function]:
+def is_jalr(word: int) -> bool:
+    return opcode(word) == 0 and (word & 0x3F) == 9
+
+
+def is_syscall(word: int) -> bool:
+    return (word & 0xFC00003F) == 0x0000000C
+
+
+def is_exception_return(word: int) -> bool:
+    return word in (0x42000018, 0x4200001F)  # ERET / DERET
+
+
+def is_conditional_branch(word: int) -> bool:
+    op = opcode(word)
+    if op in (0x04, 0x05, 0x06, 0x07, 0x14, 0x15, 0x16, 0x17):
+        return True
+    if op == 0x01:  # REGIMM, but not R5900 MTSAH and other data operations.
+        rt = (word >> 16) & 31
+        return rt in (0, 1, 2, 3, 16, 17, 18, 19)
+    if op in (0x10, 0x11, 0x12):
+        return ((word >> 21) & 31) == 0x08  # BC0/BC1/BC2
+    return False
+
+
+def has_delay_slot(word: int) -> bool:
+    return (opcode(word) in (0x02, 0x03) or is_jr(word) or is_jalr(word)
+            or is_conditional_branch(word))
+
+
+def discover(entries: Iterable[int], words: Dict[int, int],
+             max_leaders: int = 4096) -> List[Function]:
+    """Discover conservative resume points through interpreter-only barriers.
+
+    Native code ends before an instruction that the backend cannot translate.
+    The interpreter executes that instruction and may reenter native code at a
+    discovered successor. Discovery is a candidate superset, not proof that a
+    guest address is reachable at runtime. Bound it for large game ELFs.
+    """
+    if max_leaders < 1:
+        raise ValueError("max_leaders must be at least one")
     leaders: Set[int] = set(entries)
     pending = list(entries)
     visited: Set[int] = set()
 
     def schedule(address: int) -> None:
-        if address in words and address not in leaders:
+        if (address in words and address not in leaders
+                and len(leaders) < max_leaders):
             leaders.add(address)
             pending.append(address)
 
@@ -106,7 +146,7 @@ def discover(entries: Iterable[int], words: Dict[int, int]) -> List[Function]:
             visited.add(pc)
             word = words[pc]
             op = opcode(word)
-            if op in (0x02, 0x03, 0x04, 0x05) or is_jr(word):
+            if has_delay_slot(word):
                 if pc + 4 not in words:
                     raise ValueError(f"control transfer at 0x{pc:08x} has no delay slot")
                 if pc + 4 in leaders:
@@ -114,12 +154,19 @@ def discover(entries: Iterable[int], words: Dict[int, int]) -> List[Function]:
                 visited.add(pc + 4)
                 if op in (0x02, 0x03):
                     schedule(jump_target(pc, word))
-                elif op in (0x04, 0x05):
+                elif is_conditional_branch(word):
                     schedule(branch_target(pc, word))
-                if op in (0x03, 0x04, 0x05):
+                if op == 0x03 or is_jalr(word) or is_conditional_branch(word):
                     schedule(pc + 8)
                 break
-            if is_break(word) or not is_supported_data(word):
+            if is_break(word) or is_exception_return(word):
+                break
+            if not is_supported_data(word):
+                # Syscalls return to their following instruction. For other
+                # unrecognized straight-line instructions this is a candidate
+                # successor, but the actual operation always stays in the
+                # interpreter; no semantics are guessed by the recompiler.
+                schedule(pc + 4)
                 break
             pc += 4
 
@@ -135,11 +182,10 @@ def discover(entries: Iterable[int], words: Dict[int, int]) -> List[Function]:
                 block.direct_fallthrough = True
                 break
             word = words[pc]
-            op = opcode(word)
-            if op in (0x02, 0x03, 0x04, 0x05) or is_jr(word):
+            if has_delay_slot(word):
                 block.end = pc + 8
                 break
-            if is_break(word) or not is_supported_data(word):
+            if is_break(word) or is_exception_return(word) or not is_supported_data(word):
                 block.end = pc + 4
                 break
             pc += 4
@@ -160,7 +206,7 @@ def split_for_event_horizon(functions: List[Function], words: Dict[int, int],
         while function.end - start > maximum * 4:
             end = start + maximum * 4
             previous_word = words[end - 4]
-            if opcode(previous_word) in (0x02, 0x03, 0x04, 0x05) or is_jr(previous_word):
+            if has_delay_slot(previous_word):
                 end -= 4
             if end <= start:
                 raise ValueError("cannot split branch/delay-slot pair")
@@ -696,7 +742,8 @@ def generate(paths: List[Path], package_name: str,
              direct_traces: Iterable[Trace] = (),
              factory_name: str = "generated_phase0_aot_package",
              guard_guest_code: bool = False,
-             max_block_instructions: int = 0) -> str:
+             max_block_instructions: int = 0,
+             max_discovered_blocks: int = 4096) -> str:
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", factory_name):
         raise ValueError("factory name must be a C++ identifier")
     direct_traces = tuple(direct_traces)
@@ -713,7 +760,7 @@ def generate(paths: List[Path], package_name: str,
         if overlap:
             raise ValueError(f"{path}: overlaps another ELF at 0x{min(overlap):08x}")
         all_words.update(words)
-    functions = discover(entries, all_words)
+    functions = discover(entries, all_words, max_leaders=max_discovered_blocks)
     if max_block_instructions:
         functions = split_for_event_horizon(
             functions, all_words, max_block_instructions
@@ -878,6 +925,7 @@ def main() -> None:
     parser.add_argument("--factory-name", default="generated_phase0_aot_package")
     parser.add_argument("--guard-guest-code", action="store_true")
     parser.add_argument("--max-block-instructions", type=int, default=0)
+    parser.add_argument("--max-discovered-blocks", type=int, default=4096)
     parser.add_argument("--defer-gpr-writeback", action="store_true")
     parser.add_argument("--execution-census", type=Path)
     parser.add_argument("--trace-plan-output", type=Path)
@@ -901,6 +949,7 @@ def main() -> None:
         args.elf, args.package_name, args.defer_gpr_writeback, traces,
         factory_name=args.factory_name, guard_guest_code=args.guard_guest_code,
         max_block_instructions=args.max_block_instructions,
+        max_discovered_blocks=args.max_discovered_blocks,
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(result, encoding="utf-8", newline="\n")

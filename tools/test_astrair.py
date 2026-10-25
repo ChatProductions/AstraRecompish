@@ -16,8 +16,8 @@ from astrair.deopt import (
 )
 from astrair.ir import Effect, Op, UpperBits, ValueKind
 from generate_astrart import (
-    Function, defer_gpr_writeback, generate, generate_trace_plan,
-    select_direct_traces, split_for_event_horizon,
+    Function, defer_gpr_writeback, discover, generate, generate_trace_plan,
+    has_delay_slot, select_direct_traces, split_for_event_horizon,
 )
 from make_aot_chain_elf import build as build_chain_elf
 from make_aot_memory_elf import elf as build_memory_elf
@@ -472,6 +472,46 @@ class AstraIrBuilderTests(unittest.TestCase):
         self.assertIn("state.pc, 0u};", generated)
         with self.assertRaisesRegex(ValueError, "identifier"):
             generate([path], "private-title", factory_name="invalid.name")
+
+    def test_recompiler_resumes_after_guest_syscall_and_fallback(self) -> None:
+        # The native block stops at the syscall; the PC after the BIOS/kernel
+        # return is nevertheless a valid candidate for a new native block.
+        base = 0x8000
+        words = {
+            base: i_type(0x09, 0, 2, 42),
+            base + 4: 0x0000000C,  # SYSCALL, interpreter only
+            base + 8: i_type(0x09, 2, 2, 1),
+            base + 12: 0x03E00008,  # jr ra
+            base + 16: 0x00000000,
+        }
+        blocks = discover([base], words)
+        self.assertEqual([(b.start, b.end) for b in blocks], [
+            (base, base + 8), (base + 8, base + 20)])
+        # MFC0 remains interpreter-only but does not truncate discovery.
+        words = {
+            base: 0x40026000,       # mfc0 v0, status (unsupported AOT)
+            base + 4: i_type(0x09, 2, 2, 1),
+            base + 8: 0x0000000D,   # BREAK
+        }
+        self.assertEqual([(b.start, b.end) for b in discover([base], words)], [
+            (base, base + 4), (base + 4, base + 12)])
+
+    def test_recompiler_discovers_unsupported_branch_successors(self) -> None:
+        base = 0x9000
+        words = {
+            base: i_type(0x14, 2, 3, 2), # BEQL, backend deoptimizes
+            base + 4: 0,                 # delay slot; never an entry
+            base + 8: i_type(0x09, 0, 2, 7),
+            base + 12: 0x0000000D,       # taken target
+        }
+        self.assertTrue(has_delay_slot(words[base]))
+        blocks = discover([base], words)
+        self.assertEqual([b.start for b in blocks], [
+            base, base + 8, base + 12])
+        self.assertEqual(blocks[0].end, base + 8)
+        self.assertEqual(len(discover([base], words, max_leaders=2)), 2)
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            discover([base], words, max_leaders=0)
 
     def test_scheduler_splits_before_branch_not_in_its_delay_slot(self) -> None:
         base = 0x1000
