@@ -128,8 +128,14 @@ endif()
 if(VITA)
   include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
-  set(VITA_APP_NAME "AstraRecomp")
-  set(VITA_TITLEID "PS2VITA01")
+  if(ASTRART_PRIVATE_VITA_ELF)
+    # Never replace the generic diagnostic bubble with a private game build.
+    set(VITA_APP_NAME "NFSMW 2005 AOT Test")
+    set(VITA_TITLEID "NFMRA0001")
+  else()
+    set(VITA_APP_NAME "AstraRecomp")
+    set(VITA_TITLEID "PS2VITA01")
+  endif()
   set(VITA_VERSION "01.00")
 
   add_executable(ps2vita
