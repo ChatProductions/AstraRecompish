@@ -18,6 +18,19 @@ namespace ps2vita {
 const AotPackage& generated_private_host_game_aot_package();
 }
 
+namespace {
+std::uint64_t ram_checksum(const ps2vita::Memory& memory) {
+  // Detect wrong native stores as well as wrong registers. Scan ordinary
+  // 32 MiB EE RAM only; avoid MMIO reads with hardware side effects.
+  std::uint64_t hash = 1469598103934665603ull;
+  for (std::uint32_t addr = 0; addr < ps2vita::Memory::kRamSize; addr += 8u) {
+    hash ^= memory.read64(addr);
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+} // namespace
+
 int main(int argc, char** argv) {
   if (argc != 2) {
     std::cerr << "usage: nfsmw_entry_probe <PS2 ELF>\n";
@@ -101,6 +114,10 @@ int main(int argc, char** argv) {
       oracle.fcr == native.fcr &&
       oracle.fpu_acc == native.fpu_acc;
 
+  const bool initial_ram_ok =
+      ram_checksum(interpreter_memory) == ram_checksum(native_memory);
+  matched = matched && initial_ram_ok;
+
   // The real Emulator::run_slice path must actually dispatch native code,
   // not merely work when a test calls execute_aot directly.
   auto emulator = std::make_unique<ps2vita::Emulator>();
@@ -145,6 +162,9 @@ int main(int argc, char** argv) {
       oracle.hi == native.hi && oracle.lo == native.lo &&
       oracle.hi1 == native.hi1 && oracle.lo1 == native.lo1;
   matched = matched && continuation_ok;
+  const bool continuation_ram_ok =
+      ram_checksum(interpreter_memory) == ram_checksum(native_memory);
+  matched = matched && continuation_ram_ok;
   if (!continuation_ok) {
     std::cerr << "continuation mismatch after " << continuation.instructions
               << " native guest instructions, interpreter_stop="
@@ -179,6 +199,8 @@ int main(int argc, char** argv) {
             << ", extended=" << (continuation_ok ? "PASS" : "FAIL")
             << ", extra=" << continuation.instructions
             << ", final_pc=0x" << std::hex << native.pc << std::dec
+            << ", ram=" << ((initial_ram_ok && continuation_ram_ok)
+                                ? "PASS" : "FAIL")
             << ", code-guard=" << (guard_ok ? "PASS" : "FAIL")
             << '\n';
   if (!matched) std::cerr << "guest state mismatch; do not use this package on Vita\n";
