@@ -186,7 +186,8 @@ else()
       OUTPUT "${ASTRART_GAME_AOT}"
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_astrart.py"
               --output "${ASTRART_GAME_AOT}" --package-name "private-game-entry"
-              --guard-guest-code --max-block-instructions 8
+              --factory-name "generated_private_host_game_aot_package"
+              --guard-guest-code --defer-gpr-writeback --max-block-instructions 8
               "${ASTRART_GAME_ELF}"
       DEPENDS "${ASTRART_GAME_ELF}" tools/generate_astrart.py
               tools/astrair/builder.py tools/astrair/ir.py
@@ -198,6 +199,15 @@ else()
     target_link_libraries(nfsmw_entry_probe PRIVATE ps2core)
     add_test(NAME nfsmw_entry_probe
       COMMAND nfsmw_entry_probe "${ASTRART_GAME_ELF}")
+    # Proves the actual privately generated package links and executes native
+    # code. CI supplies a redistributable synthetic ELF; no game bytes are
+    # uploaded to GitHub.
+    add_executable(private_game_aot_probe
+      tools/private_game_aot_probe.cpp "${ASTRART_GAME_AOT}")
+    target_include_directories(private_game_aot_probe PRIVATE include)
+    target_link_libraries(private_game_aot_probe PRIVATE ps2core)
+    add_test(NAME private_game_aot_probe
+      COMMAND private_game_aot_probe "${ASTRART_GAME_ELF}")
   endif()
   add_executable(ps2core_tests tests/core_tests.cpp)
   target_link_libraries(ps2core_tests PRIVATE ps2core)

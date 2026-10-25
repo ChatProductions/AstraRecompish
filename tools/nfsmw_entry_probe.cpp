@@ -14,6 +14,10 @@
 #include <memory>
 #include <vector>
 
+namespace ps2vita {
+const AotPackage& generated_private_host_game_aot_package();
+}
+
 int main(int argc, char** argv) {
   if (argc != 2) {
     std::cerr << "usage: nfsmw_entry_probe <PS2 ELF>\n";
@@ -61,7 +65,7 @@ int main(int argc, char** argv) {
     oracle.fcr[index] = native.fcr[index] = 0x12340000u + index;
   }
 
-  const auto package = ps2vita::generated_phase0_aot_package();
+  const auto& package = ps2vita::generated_private_host_game_aot_package();
   if (!ps2vita::validate_aot_package(package).ok()) {
     std::cerr << "generated native package failed validation\n";
     return 2;
