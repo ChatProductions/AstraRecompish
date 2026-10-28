@@ -758,6 +758,23 @@ StopReason Cpu::execute(std::uint32_t ins, std::uint32_t pc,
                                 0x7F7FFFFFu;
           } else state_.vu0_vi[22] = as_bits(numerator / denominator);
         }
+      } else if (fn >= 0x3Cu && special2 == 0x3Au) { // VRSQRT Q = FSf / sqrt(FTf)
+        // COP2 opcode 0x4A6103BE (NFSMW PC 0x00165110).
+        // Functional macro-mode result; VU Q pipeline latency is not modeled.
+        const auto numerator_bits = vu_lane(state_, rd, (ins >> 21) & 3u);
+        const auto denominator_bits = vu_lane(state_, rt, (ins >> 23) & 3u);
+        const float numerator = as_float(numerator_bits);
+        const float denominator = as_float(denominator_bits);
+        state_.vu0_vi[16] &= ~0x30u;
+        if (denominator < 0.0f) state_.vu0_vi[16] |= 0x10u;
+        const float root = std::sqrt(std::fabs(denominator));
+        if (root == 0.0f) {
+          state_.vu0_vi[16] |= numerator == 0.0f ? 0x10u : 0x20u;
+          state_.vu0_vi[22] = ((numerator_bits ^ denominator_bits) & 0x80000000u) |
+                              0x7F7FFFFFu;
+        } else {
+          state_.vu0_vi[22] = as_bits(numerator / root);
+        }
       } else if (fn >= 0x3Cu && special2 == 0x2Fu) { // VNOP
       } else if (fn >= 0x3Cu && special2 == 0x3Bu) { // VWAITQ, functional Q ready.
       } else if (fn <= 0x07u || fn == 0x20u) { // VADD/VSUB broadcast / VADDq
