@@ -71,6 +71,8 @@ private:
   std::uint32_t startup_stack_top_ = 0;
   std::uint32_t startup_heap_base_ = 0;
   std::uint32_t startup_heap_end_ = 0;
+  // Four-byte PS2 OSD ConfigParam, retained across guest resets like firmware settings.
+  std::uint32_t osd_config_ = 0x00014011u; // OSD2, English, 4:3 RGB, UTC, SPDIF off.
   // Bounded EE kernel subset for one active bare-ELF thread.
   // An unsatisfied WaitSema must remain a visible stop until scheduling exists.
   struct KernelSemaphore {
