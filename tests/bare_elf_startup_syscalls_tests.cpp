@@ -383,6 +383,27 @@ int main() {
               emulator.memory().read32(osd_output + 4u) == 0xA5A5A5A5u,
           "GetOsdConfigParam writes the 32-bit English OSD profile once");
 
+  // Replicate the title's observed Get/Set/Get/Set OSD sequence at
+  // 0x0049A41C..0x0049A454, including the version-bit change.
+  const auto original_osd = emulator.memory().read32(osd_output);
+  const auto updated_osd = (original_osd & 0xFFFF1FFFu) | 0x2000u;
+  emulator.memory().write32(osd_output + 4u, updated_osd);
+  require(invoke_kernel(0x4Au, osd_output + 4u) ==
+              ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 2u,
+          "SetOsdConfigParam consumes one word and preserves void $v0");
+  emulator.memory().write32(osd_output + 4u, 0xDEADBEEFu);
+  require(invoke_kernel(0x4Bu, osd_output + 4u) ==
+              ps2vita::StopReason::StepLimit &&
+              emulator.memory().read32(osd_output + 4u) == updated_osd,
+          "GetOsdConfigParam returns the state set by the previous syscall");
+  require(invoke_kernel(0x4Au, osd_output) ==
+              ps2vita::StopReason::StepLimit &&
+              invoke_kernel(0x4Bu, osd_output + 4u) ==
+              ps2vita::StopReason::StepLimit &&
+              emulator.memory().read32(osd_output + 4u) == original_osd,
+          "OSD settings can be restored by the game's final Set call");
+
   require(invoke_kernel(0x4Bu, osd_output + 1u) ==
               ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
           "misaligned GetOsdConfigParam pointer stays a visible stop");
@@ -395,6 +416,13 @@ int main() {
   require(invoke_kernel(0x4Bu, 0u) ==
               ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
           "GetOsdConfigParam rejects a null destination");
+  require(invoke_kernel(0x4Au, 0u) ==
+              ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
+          "SetOsdConfigParam rejects a null source");
+  require(invoke_kernel(0x4Bu, osd_output) ==
+              ps2vita::StopReason::StepLimit &&
+              emulator.memory().read32(osd_output) == original_osd,
+          "an invalid Set does not mutate the persistent OSD profile");
 
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
