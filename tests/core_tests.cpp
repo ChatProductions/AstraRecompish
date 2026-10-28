@@ -2512,6 +2512,29 @@ void test_vu0_captured_normalization() {
   check(cpu.step() == ps2vita::StopReason::None &&
         cpu.state().vu0_vi[22] == 0xFF7FFFFFu && (cpu.state().vu0_vi[16] & 0x30u) == 0x20u,
         "VDIV by negative zero saturates with the correct sign");
+
+  // Captured NFSMW VRSQRT instruction: VF0.w / sqrt(VF1.x).
+  // Verify the exact invalid-opcode address's instruction, not a synthetic
+  // near-neighbor that happens to share the COP2 arithmetic decoder.
+  memory.write32(0x1000u, 0x4A6103BEu);
+  cpu.reset(0x1000u);
+  cpu.state().vu0_vf[1] = 0x40800000u; // denominator +4.0
+  check(cpu.step() == ps2vita::StopReason::None &&
+        cpu.state().vu0_vi[22] == 0x3F000000u &&
+        (cpu.state().vu0_vi[16] & 0x30u) == 0u,
+        "NFSMW VRSQRT computes 1/sqrt(4) into VU0 Q");
+  cpu.reset(0x1000u);
+  cpu.state().vu0_vf[1] = 0xC0800000u; // denominator -4.0
+  check(cpu.step() == ps2vita::StopReason::None &&
+        cpu.state().vu0_vi[22] == 0x3F000000u &&
+        (cpu.state().vu0_vi[16] & 0x30u) == 0x10u,
+        "NFSMW VRSQRT records negative-denominator invalid flag");
+  cpu.reset(0x1000u);
+  cpu.state().vu0_vf[1] = 0x80000000u; // denominator -0.0
+  check(cpu.step() == ps2vita::StopReason::None &&
+        cpu.state().vu0_vi[22] == 0xFF7FFFFFu &&
+        (cpu.state().vu0_vi[16] & 0x30u) == 0x20u,
+        "NFSMW VRSQRT saturates a negative-zero divisor");
 }
 
 void test_vu0_outer_product() {
