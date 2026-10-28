@@ -548,6 +548,22 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     --sema.count;
     return true;
   }
+  case 0x4Bu: { // GetOsdConfigParam(ConfigParam*): PS2SDK's packed 32-bit word.
+    // The observed NFSMW startup passes a pointer near the top of EE RAM.
+    // Validate the entire write and reject MMIO/ROM/null destinations.
+    // Accept physical EE RAM and its KSEG0/KSEG1 direct aliases.
+    const bool kseg_alias = (arg0 & 0xC0000000u) == 0x80000000u;
+    const auto physical = kseg_alias ? (arg0 & 0x1FFFFFFFu) : arg0;
+    if (arg0 == 0u || (arg0 & 3u) != 0u ||
+        physical > Memory::kRamSize - 4u ||
+        !memory_.valid(arg0, 4u)) return false;
+    // PS2 OSD2 profile: SPDIF disabled, 4:3 RGB, English, UTC.
+    // Bits: spdif[0], japLanguage[4], version[13:15], language[16:20].
+    constexpr std::uint32_t kOsdConfigEnglish = 0x00014011u;
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    memory_.write32(arg0, kOsdConfigEnglish);
+    return true; // Void syscall: preserve $v0.
+  }
   case 0x64u: // FlushCache(mode)
     // EE reads and writes in this runtime are already coherent: there is no
     // separately modeled dirty D-cache or stale I-cache to synchronize.
