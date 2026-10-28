@@ -548,6 +548,7 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     --sema.count;
     return true;
   }
+  case 0x4Au: // SetOsdConfigParam(const ConfigParam*)
   case 0x4Bu: { // GetOsdConfigParam(ConfigParam*): PS2SDK's packed 32-bit word.
     // The observed NFSMW startup passes a pointer near the top of EE RAM.
     // Validate the entire write and reject MMIO/ROM/null destinations.
@@ -557,12 +558,13 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     if (arg0 == 0u || (arg0 & 3u) != 0u ||
         physical > Memory::kRamSize - 4u ||
         !memory_.valid(arg0, 4u)) return false;
-    // PS2 OSD2 profile: SPDIF disabled, 4:3 RGB, English, UTC.
-    // Bits: spdif[0], japLanguage[4], version[13:15], language[16:20].
-    constexpr std::uint32_t kOsdConfigEnglish = 0x00014011u;
+    // Set and Get are both void. The game updates OSD version bits,
+    // verifies the result, and restores the original packed four-byte word.
+    const auto incoming = number == 0x4Au ? memory_.read32(arg0) : 0u;
     if (!cpu_.retire_trapped_syscall(0u, false)) return false;
-    memory_.write32(arg0, kOsdConfigEnglish);
-    return true; // Void syscall: preserve $v0.
+    if (number == 0x4Au) osd_config_ = incoming;
+    else memory_.write32(arg0, osd_config_);
+    return true; // Preserve $v0 and leave adjacent guest stack words alone.
   }
   case 0x64u: // FlushCache(mode)
     // EE reads and writes in this runtime are already coherent: there is no
