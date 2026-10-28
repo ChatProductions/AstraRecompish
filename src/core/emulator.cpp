@@ -26,6 +26,19 @@ void set_bios_reset_state(CpuState& state) {
 Emulator::Emulator()
     : memory_(), cpu_(memory_), iop_(memory_), gif_(gs_), vif1_(memory_) {}
 
+void Emulator::enable_native_iop_services(bool enabled) {
+  native_iop_enabled_ = enabled && image_.ok;
+  sif_dma_last_id_ = 0u;
+  if (native_iop_enabled_) native_iop_.boot(memory_);
+  else {
+    native_iop_.reset();
+    // EE owns clearing SMFLAG; the bare-ELF test must not retain stale
+    // IOP readiness after disabling the only running IOP-side service.
+    memory_.write32(0x1000F230u, 0x00030000u);
+    memory_.write32(0x1000F210u, 0u);
+  }
+}
+
 ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   memory_.clear();
   gif_.reset();
@@ -35,6 +48,9 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   cpu_.set_startup_aot_package(nullptr);
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
+  native_iop_enabled_ = false;
+  native_iop_.reset();
+  sif_dma_last_id_ = 0u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
@@ -71,6 +87,9 @@ bool Emulator::boot_bios() {
   iop_.reset();
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
+  native_iop_enabled_ = false;
+  native_iop_.reset();
+  sif_dma_last_id_ = 0u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
@@ -220,6 +239,57 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     return true;
   }
   switch (number) {
+  case 0x6Bu: { // sceSifStopDma(): disable EE SIF0 receive channel.
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    const auto chcr = Memory::kHwBase + 0xC000u;
+    memory_.write32(chcr, memory_.read32(chcr) & ~0x100u);
+    return true;
+  }
+  case 0x76u: // sceSifDmaStat(trid): -1 means the transfer has completed.
+    if (!native_iop_enabled_) return false;
+    return cpu_.retire_trapped_syscall(
+        arg0 != 0u && arg0 <= sif_dma_last_id_ ? UINT64_MAX : 0u);
+  case 0x77u: { // sceSifSetDma(descriptors, count): EE -> IOP SIF1 copies.
+    if (!native_iop_enabled_ || arg1 == 0u || arg1 > 8u ||
+        (arg0 & 3u) != 0u ||
+        !memory_.valid(arg0, arg1 * 16u)) return false;
+    struct Transfer { std::uint32_t src, dst, size; };
+    std::array<Transfer, 8> transfers{};
+    std::uint32_t aggregate = 0u;
+    for (std::uint32_t i = 0; i < arg1; ++i) {
+      const auto at = arg0 + i * 16u;
+      auto& d = transfers[i];
+      d.src = memory_.read32(at);
+      d.dst = memory_.read32(at + 4u);
+      d.size = memory_.read32(at + 8u);
+      if (d.size == 0u || d.size > 1u * 1024u * 1024u ||
+          d.size > 1u * 1024u * 1024u - aggregate ||
+          !memory_.valid(d.src, d.size) ||
+          d.dst >= Memory::kIopRamSize ||
+          d.size > Memory::kIopRamSize - d.dst) return false;
+      aggregate += d.size;
+    }
+    // Validate the entire list before mutating IOP RAM; copies are bounded
+    // and visible to the native SIFCMD receiver in submission order.
+    for (std::uint32_t i = 0; i < arg1; ++i) {
+      const auto& d = transfers[i];
+      for (std::uint32_t j = 0; j < d.size; ++j)
+        memory_.iop_write8(d.dst + j, memory_.read8(d.src + j));
+      if (!native_iop_.receive(memory_, d.dst, d.size,
+                               sif_system_regs_[1])) return false;
+      const auto sema_id = native_iop_.take_pending_signal_sema();
+      if (sema_id != 0u) {
+        if (sema_id > kernel_semaphores_.size()) return false;
+        auto& sema = kernel_semaphores_[sema_id - 1u];
+        if (!sema.in_use || sema.count >= sema.maximum) return false;
+        ++sema.count; // Native SIFRPC END response precedes EE WaitSema.
+      }
+    }
+    // HLE transfers complete synchronously. A real transfer ID is still
+    // reported, and sceSifDmaStat can confirm its completion.
+    const auto trid = ++sif_dma_last_id_;
+    return cpu_.retire_trapped_syscall(trid);
+  }
   case 0x79u: // sceSifSetReg(id, value): kernel software or SBUS hardware.
   case 0x7Au: { // sceSifGetReg(id): return the actual current register.
     const bool system_reg = (arg0 & 0x80000000u) != 0u;
@@ -682,6 +752,9 @@ void Emulator::service_graphics() {
 
 void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
+  sif_dma_last_id_ = 0u;
+  native_iop_.reset();
+  if (native_iop_enabled_ && image_.ok) native_iop_.boot(memory_);
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   sif_system_regs_ = {};
   deci2_last_debug_text_ = {};

@@ -8,6 +8,70 @@ is **never** included inside these VPKs.
 
 ## October 29, 2026: host replay replaces the VPK-per-syscall cycle
 
+### Native IOP service milestone (later October 29)
+
+The host replay now supports an explicitly enabled, stateful **native IOP
+service replacement** (`--native-iop`). This is **not** IOP CPU emulation and
+is not enabled in the currently published VitaTunnel VPK. It models the IOP
+SIFMAN/SIFCMD receive buffer, validates EE SIF1 DMA command packets, completes
+the SIFCMD and RPC initialization handshakes, manages transfer IDs, and
+implements the first bounded CDVDFSV RPC server (bind plus `sceCdInit` RPC
+function 0). Unsupported RPC servers and commands remain visible stops. The
+EE `UNCACHED_SEG` and `UCAB_SEG` RAM aliases, critical to the SIFRPC packet
+tables, are also mapped explicitly. These transitions have synthetic unit
+tests as well as a replay with the private title ELF.
+
+That replay now proceeds through **five** actual EE-to-IOP command packets:
+
+1. `SIF_CMD_INIT_CMD`, SIFCMD handshake.
+2. `SIF_CMD_INIT_CMD`, RPC handshake, including SREG RPCINIT notification.
+3. RPC bind for `0x80000592`, CDVD initialization server.
+4. RPC call 0 to that server, returning the driver-initialized result (no
+   game disc/filesystem is mounted, and no sector data is invented).
+5. `SIF_CMD_RESET_CMD`, an IOP reboot request.
+
+The new **real dependency** is decoded from the fifth packet:
+
+```
+reason=syscall
+pc=004958E4
+cycles=6858760
+iop_hle_phase=4
+iop_cmd_packets=5
+cdvd_init_calls=1
+iop_reboots_requested=1
+iop_reboot_mode=0
+iop_reboot_arg=rom0:UDNL host:NFS\IOPRP280.IMG
+```
+
+`host:NFS\IOPRP280.IMG` is a game-specific IOP reboot/module image. It was
+**not present in the supplied `ps2vita (9).zip`**, which only contains logs,
+benchmark output and the existing external `boot.elf`. The HLE decoder
+intentionally stops at that reboot instead of setting `BOOTEND` and pretending
+the image was loaded. The next substantial piece is a native asset/module
+service that can obtain the IOP image from separately supplied **game data**,
+parse its contained modules and replace their required services. The existing
+`ux0:data/ps2vita/boot.elf` stays external; it must not be repackaged.
+
+Host validation with the same privately held ELF:
+
+```sh
+cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
+cmake --build build-host --target nfsmw_startup_replay \
+  native_iop_services_tests bare_elf_startup_syscalls_tests -j4
+build-host/native_iop_services_tests
+build-host/bare_elf_startup_syscalls_tests
+build-host/nfsmw_startup_replay /absolute/path/to/boot.elf 16000000 --native-iop
+```
+
+The replay's cycle count is **startup progress, not game performance**. The
+host-only replay still uses Astra's diagnostic interpreter; full native AOT
+translation and Vita rendering are not proven. **No new VitaTunnel release**
+should be advertised until the reboot/module dependency has a real service
+implementation and an on-hardware test is warranted.
+
+### Earlier baseline
+
 Vita r4 stopped at `0x00495904`, syscall `0x78` (`sceSifSetDChain`), after
 6,855,355 guest cycles. Its preceding debug call printed `main() argc = 0`.
 The new host-only `nfsmw_startup_replay` tool reproduces **exactly** that

@@ -3,6 +3,7 @@
 #include "ps2vita/emulator.hpp"
 
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -11,12 +12,16 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-  if (argc != 2 && argc != 3) {
-    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles]\n");
+  if (argc < 2 || argc > 4) {
+    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop]\n");
     return 2;
   }
   std::uint64_t limit = 12000000u;
-  if (argc == 3) {
+  bool native_iop = false;
+  if (argc >= 3 && argv[2][0] == '-') {
+    if (argc != 3 || std::strcmp(argv[2], "--native-iop") != 0) return 2;
+    native_iop = true;
+  } else if (argc >= 3) {
     char* end = nullptr;
     limit = std::strtoull(argv[2], &end, 10);
     if (*argv[2] == '\0' || *end != '\0' || limit == 0u ||
@@ -24,6 +29,10 @@ int main(int argc, char** argv) {
       std::fprintf(stderr, "invalid max_cycles (1 to 100000000)\n");
       return 2;
     }
+  }
+  if (argc == 4) {
+    if (std::strcmp(argv[3], "--native-iop") != 0) return 2;
+    native_iop = true;
   }
   std::ifstream file(argv[1], std::ios::binary);
   if (!file) {
@@ -38,7 +47,9 @@ int main(int argc, char** argv) {
     return 2;
   }
   emulator->enable_bare_elf_startup_syscalls(true);
-  std::printf("replay=host-interpreter-only\nentry=%08X\n", loaded.entry);
+  emulator->enable_native_iop_services(native_iop);
+  std::printf("replay=host-interpreter-only\nnative_iop=%u\nentry=%08X\n",
+              native_iop ? 1u : 0u, loaded.entry);
   std::uint64_t next_progress = 1000000u;
   std::uint32_t last_deci2_count = 0u;
   unsigned sifcmd_wait_samples = 0u;
@@ -53,7 +64,7 @@ int main(int argc, char** argv) {
     // repeatedly until the IOP sets SIF_STAT_CMDINIT in SMFLAG. Detect the
     // absent-IOP bootstrap without manufacturing an IOP-ready response.
     const auto smflag = emulator->memory().read32(0x1000F230u);
-    if (state.pc >= 0x00496D28u && state.pc <= 0x00496D38u &&
+    if (!native_iop && state.pc >= 0x00496D28u && state.pc <= 0x00496D38u &&
         (smflag & 0x20000u) == 0u && emulator->iop().state().cycles == 0u)
       ++sifcmd_wait_samples;
     else sifcmd_wait_samples = 0u;
@@ -77,7 +88,13 @@ int main(int argc, char** argv) {
       std::printf("reason=%s\npc=%08X\nopcode=%08X\ncycles=%llu\n"
                   "v1=%08X\na0=%08X\na1=%08X\na2=%08X\na3=%08X\n"
                   "v0=%08X\nra=%08X\nsp=%08X\n"
-                  "iop_cycles=%llu\n",
+                  "s0=%08X\ns1=%08X\ngp=%08X\n"
+                  "lw_s0_plus_10=%08X\n"
+                  "iop_cycles=%llu\n"
+                  "iop_hle_phase=%u\niop_cmd_packets=%u\n"
+                  "iop_unsupported_cid=%08X\niop_unsupported_sid=%08X\n"
+                  "cdvd_init_calls=%u\niop_reboots_requested=%u\n"
+                  "iop_reboot_mode=%u\niop_reboot_arg=%s\n",
           ps2vita::stop_reason_name(stop), state.pc,
           emulator->cpu().fault_instruction(),
           static_cast<unsigned long long>(state.cycles),
@@ -89,15 +106,30 @@ int main(int argc, char** argv) {
           static_cast<std::uint32_t>(state.gpr[2]),
           static_cast<std::uint32_t>(state.gpr[31]),
           static_cast<std::uint32_t>(state.gpr[29]),
-          static_cast<unsigned long long>(emulator->iop().state().cycles));
+          static_cast<std::uint32_t>(state.gpr[16]),
+          static_cast<std::uint32_t>(state.gpr[17]),
+          static_cast<std::uint32_t>(state.gpr[28]),
+          static_cast<std::uint32_t>(state.gpr[16] + 0x10u),
+          static_cast<unsigned long long>(emulator->iop().state().cycles),
+          static_cast<unsigned>(emulator->native_iop_services().phase()),
+          emulator->native_iop_services().command_count(),
+          emulator->native_iop_services().unsupported_cid(),
+          emulator->native_iop_services().unsupported_rpc_sid(),
+          emulator->native_iop_services().cdvd_init_calls(),
+          emulator->native_iop_services().reboot_count(),
+          emulator->native_iop_services().reboot_mode(),
+          emulator->native_iop_services().reboot_arg());
       return 0; // A captured stop is the desired diagnostic outcome.
     }
   }
   const auto& state = emulator->cpu().state();
   std::printf("reason=cycle-limit\npc=%08X\ncycles=%llu\n"
-              "sif_smflag=%08X\niop_cycles=%llu\n",
+              "sif_smflag=%08X\niop_cycles=%llu\n"
+              "iop_hle_phase=%u\niop_cmd_packets=%u\n",
               state.pc, static_cast<unsigned long long>(state.cycles),
               emulator->memory().read32(0x1000F230u),
-              static_cast<unsigned long long>(emulator->iop().state().cycles));
+              static_cast<unsigned long long>(emulator->iop().state().cycles),
+              static_cast<unsigned>(emulator->native_iop_services().phase()),
+              emulator->native_iop_services().command_count());
   return 0;
 }

@@ -5,6 +5,7 @@
 #include "ps2vita/gif.hpp"
 #include "ps2vita/gs.hpp"
 #include "ps2vita/iop_cpu.hpp"
+#include "ps2vita/native_iop_services.hpp"
 #include "ps2vita/vif.hpp"
 
 #include <array>
@@ -25,6 +26,10 @@ public:
   void enable_bare_elf_startup_syscalls(bool enabled) {
     bare_elf_startup_syscalls_ = enabled;
   }
+  // Opt-in native IOP service replacement for the host startup experiment.
+  // Does not enable a second CPU, or turn unknown RPCs into fake successes.
+  void enable_native_iop_services(bool enabled);
+  const NativeIopServices& native_iop_services() const { return native_iop_; }
   void service_graphics();
   void reset();
 
@@ -68,6 +73,7 @@ private:
   Memory memory_;
   Cpu cpu_;
   IopCpu iop_;
+  NativeIopServices native_iop_;
   Gs gs_;
   Gif gif_;
   Vif1 vif1_;
@@ -75,6 +81,8 @@ private:
   std::uint32_t ee_cycles_until_iop_ = 8u;
   bool ready_ = false;
   bool bare_elf_startup_syscalls_ = false;
+  bool native_iop_enabled_ = false;
+  std::uint32_t sif_dma_last_id_ = 0u;
   std::uint32_t startup_stack_top_ = 0;
   std::uint32_t startup_heap_base_ = 0;
   std::uint32_t startup_heap_end_ = 0;

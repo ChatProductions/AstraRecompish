@@ -41,6 +41,13 @@ Memory::Memory()
 }
 
 std::uint32_t Memory::physical(std::uint32_t address) const {
+  // R5900 EE RAM also has user-mode cache-bypass aliases: UNCACHED_SEG
+  // (0x20000000) and UCAB_SEG (0x30000000), as used by PS2SDK's SIF/RPC
+  // packet tables. Only the first 32 MiB is physical RAM; do not map the
+  // entire 512 MiB segment or silently wrap guest out-of-bounds pointers.
+  if ((address & 0xFE000000u) == 0x20000000u ||
+      (address & 0xFE000000u) == 0x30000000u)
+    return address & 0x01FFFFFFu;
   // EE cached/uncached kernel segments alias the first 512 MiB.
   if ((address & 0xE0000000u) == 0x80000000u ||
       (address & 0xE0000000u) == 0xA0000000u) {

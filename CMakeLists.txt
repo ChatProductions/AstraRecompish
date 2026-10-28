@@ -106,6 +106,7 @@ add_library(ps2core
   src/core/gs.cpp
   src/core/iop_cpu.cpp
   src/core/memory.cpp
+  src/core/native_iop_services.cpp
   src/core/spu2_adpcm.cpp
   src/core/spu2_envelope.cpp
   src/core/spu2_voice.cpp
@@ -228,6 +229,12 @@ else()
     target_compile_options(bare_elf_startup_syscalls_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME bare_elf_startup_syscalls_tests COMMAND bare_elf_startup_syscalls_tests)
+  add_executable(native_iop_services_tests tests/native_iop_services_tests.cpp)
+  target_link_libraries(native_iop_services_tests PRIVATE ps2core)
+  if(NOT MSVC)
+    target_compile_options(native_iop_services_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME native_iop_services_tests COMMAND native_iop_services_tests)
   add_executable(cpu_dispatch_tests tests/cpu_dispatch_tests.cpp)
   target_link_libraries(cpu_dispatch_tests PRIVATE ps2core)
   add_executable(cpu_nop_tests tests/cpu_nop_tests.cpp)

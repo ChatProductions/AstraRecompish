@@ -576,6 +576,69 @@ int main() {
   require(invoke_kernel(0x3Eu, 0u) == ps2vita::StopReason::Syscall,
           "a guest reset clears the prior heap boundary");
 
+  // End-to-end syscall-level SIFCMD/RPC HLE: an opt-in IOP receiver is
+  // required and commands really cross the EE->IOP SIFDMA descriptor path.
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  require(invoke_kernel(0x77u, 0x4200u) == ps2vita::StopReason::Syscall &&
+              emulator.memory().read32(0x1000F230u) == 0u,
+          "DMA remains an explicit stop without an IOP service receiver");
+  emulator.enable_native_iop_services(true);
+  constexpr std::uint32_t kCmdData = 0x4000u;
+  constexpr std::uint32_t kSregs = 0x4080u;
+  constexpr std::uint32_t kEeReceive = 0x4300u;
+  constexpr std::uint32_t kPacket = 0x4100u;
+  constexpr std::uint32_t kDmaList = 0x4200u;
+  constexpr std::uint32_t kIopReceive =
+      ps2vita::NativeIopServices::kReceiveAddress;
+  auto& mem = emulator.memory();
+  mem.write32(kCmdData + 28u, kSregs);
+  kernel_state.gpr[5] = kCmdData;
+  require(invoke_kernel(0x79u, 0x80000001u) == ps2vita::StopReason::StepLimit,
+          "EE publishes its SIFCMD data table in SYSREG_MAINADDR");
+  mem.write32(kDmaList, kPacket);
+  mem.write32(kDmaList + 4u, kIopReceive);
+  mem.write32(kDmaList + 8u, 20u);
+  mem.write32(kDmaList + 12u, 0u);
+  mem.write32(kPacket, 20u);
+  mem.write32(kPacket + 4u, 0u);
+  mem.write32(kPacket + 8u, 0x80000002u); // SIF_CMD_INIT_CMD
+  mem.write32(kPacket + 12u, 0u);        // SIFCMD handshake
+  mem.write32(kPacket + 16u, kEeReceive);
+  kernel_state.gpr[5] = 1u;
+  require(invoke_kernel(0x77u, kDmaList) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] != 0u &&
+              emulator.native_iop_services().phase() ==
+                  ps2vita::NativeIopServices::Phase::CmdConnected &&
+              mem.iop_read32(kIopReceive + 16u) == kEeReceive,
+          "SifSetDma copies an actual EE command into the IOP receiver");
+  const auto dma_id = static_cast<std::uint32_t>(kernel_state.gpr[2]);
+  require(invoke_kernel(0x76u, dma_id) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == UINT64_MAX,
+          "SifDmaStat reports the modeled transfer as completed");
+  mem.write32(0x1000C000u, 0x184u);
+  require(invoke_kernel(0x6Bu, 0u) == ps2vita::StopReason::StepLimit &&
+              mem.read32(0x1000C000u) == 0x84u,
+          "SifStopDma disables SIF0 STR without erasing chain config");
+  mem.write32(kDmaList + 8u, 16u);
+  mem.write32(kPacket, 16u);
+  mem.write32(kPacket + 12u, 1u); // RPC initialization request
+  kernel_state.gpr[5] = 1u;
+  require(invoke_kernel(0x77u, kDmaList) == ps2vita::StopReason::StepLimit &&
+              emulator.native_iop_services().phase() ==
+                  ps2vita::NativeIopServices::Phase::RpcReady &&
+              mem.read32(kSregs) == 1u,
+          "RPC ready response follows the actual SIFCMD command exchange");
+  mem.write32(kPacket, 64u);
+  mem.write32(kPacket + 8u, 0x80000009u); // SIF_CMD_RPC_BIND
+  mem.write32(kPacket + 32u, 0x80000001u); // fileio SID
+  mem.write32(kDmaList + 8u, 64u);
+  kernel_state.gpr[5] = 1u;
+  require(invoke_kernel(0x77u, kDmaList) == ps2vita::StopReason::Syscall &&
+              emulator.native_iop_services().unsupported_rpc_sid() ==
+                  0x80000001u,
+          "unknown IOP file service is reported without false bind success");
+
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
 }
