@@ -424,6 +424,41 @@ int main() {
               emulator.memory().read32(osd_output) == original_osd,
           "an invalid Set does not mutate the persistent OSD profile");
 
+  // The October 28 NFSMW hardware stop at PC 0x00495504 is EE
+  // syscall 0x3E (EndOfHeap). It must reflect SetupHeap, not a dummy
+  // success code or a guessed limit.
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  require(invoke_kernel(0x3Eu, 0u) == ps2vita::StopReason::Syscall &&
+              kernel_state.pc == 0x1000u,
+          "EndOfHeap without SetupHeap remains a visible syscall stop");
+  set_stack_args(emulator);
+  require(invoke_kernel(0x3Cu, 0x005B3BF0u) ==
+              ps2vita::StopReason::StepLimit,
+          "EndOfHeap fixture sets up main thread first");
+  kernel_state.gpr[5] = 0x00100000u;
+  require(invoke_kernel(0x3Du, 0x00400000u) ==
+              ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0x00500000u,
+          "EndOfHeap fixture sets up a bounded 1 MiB heap");
+  kernel_state.gpr[2] = 0xDEADu;
+  const auto cycles_before_heap_query = kernel_state.cycles;
+  require(invoke_kernel(0x3Eu, 0u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0x00500000u &&
+              kernel_state.pc == 0x1004u &&
+              kernel_state.cycles == cycles_before_heap_query + 1u,
+          "EndOfHeap returns actual configured bound and retires once");
+  kernel_state.gpr[5] = 0x00200000u;
+  require(invoke_kernel(0x3Du, 0x00400000u) ==
+              ps2vita::StopReason::StepLimit &&
+              invoke_kernel(0x3Eu, 0u) == ps2vita::StopReason::StepLimit &&
+              kernel_state.gpr[2] == 0x00600000u,
+          "EndOfHeap tracks a later successful SetupHeap call");
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  require(invoke_kernel(0x3Eu, 0u) == ps2vita::StopReason::Syscall,
+          "a guest reset clears the prior heap boundary");
+
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
 }
