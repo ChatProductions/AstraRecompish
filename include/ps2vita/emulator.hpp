@@ -52,6 +52,9 @@ public:
   const Vif1& vif1() const { return vif1_; }
   const ElfLoadResult& image() const { return image_; }
   bool ready() const { return ready_; }
+  // Diagnostics only: distinguish a missing SetupHeap from an unhandled syscall.
+  std::uint32_t startup_heap_base() const { return startup_heap_base_; }
+  std::uint32_t startup_heap_end() const { return startup_heap_end_; }
 
 private:
   bool handle_bare_elf_startup_syscall();

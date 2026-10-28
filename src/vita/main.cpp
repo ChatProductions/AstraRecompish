@@ -27,6 +27,11 @@ constexpr const char* kProbePath = "ux0:data/ps2vita/startup.txt";
 constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
+#if defined(PS2VITA_PRIVATE_GAME_AOT)
+constexpr const char* kBuildId = "nfsmw-aot-20261029-endofheap-source-r1";
+#else
+constexpr const char* kBuildId = "generic-ps2vita-monitor";
+#endif
 constexpr std::uint64_t kProgressInterval = 1000000u;
 // Host pacing only, not PS2 timing. Leave room for UI/presentation, while
 // replacing the fixed one-slice-per-VBlank throughput ceiling. The deadline
@@ -76,14 +81,15 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
                      : 0xFFFFFFFFu;
   };
   std::snprintf(report, sizeof(report),
-      "reason=%s\npc=%08X\nopcode=%08X\ncycles=%llu\n"
+      "build=%s\nreason=%s\npc=%08X\nopcode=%08X\ncycles=%llu\n"
       "v0=%016llX\na0=%016llX\nsp=%016llX\nra=%016llX\n"
       "v1=%016llX\na1=%016llX\na2=%016llX\na3=%016llX\nt0=%016llX\n"
       "status=%08X\ncause=%08X\nepc=%08X\nbadvaddr=%08X\n"
       "epc_opcode=%08X\nvector180=%08X,%08X,%08X,%08X\n"
       "vector200=%08X,%08X,%08X,%08X\n"
-      "a0_words=%08X,%08X,%08X,%08X,%08X,%08X\n",
-      ps2vita::stop_reason_name(reason), state.pc, cpu.fault_instruction(),
+      "a0_words=%08X,%08X,%08X,%08X,%08X,%08X\n"
+      "heap_base=%08X\nheap_end=%08X\n",
+      kBuildId, ps2vita::stop_reason_name(reason), state.pc, cpu.fault_instruction(),
       static_cast<unsigned long long>(state.cycles),
       static_cast<unsigned long long>(state.gpr[2]),
       static_cast<unsigned long long>(state.gpr[4]),
@@ -101,7 +107,8 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
       read_debug(0x80000200u), read_debug(0x80000204u),
       read_debug(0x80000208u), read_debug(0x8000020Cu),
       a0_word(0u), a0_word(1u), a0_word(2u),
-      a0_word(3u), a0_word(4u), a0_word(5u));
+      a0_word(3u), a0_word(4u), a0_word(5u),
+      emulator.startup_heap_base(), emulator.startup_heap_end());
   const int fd = sceIoOpen(kFaultPath, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));
@@ -418,8 +425,10 @@ int main() {
         if (result.ok && loaded_external) {
           const bool enabled = emulator.cpu().set_startup_aot_package(
               &ps2vita::generated_private_game_aot_package());
-          write_probe(enabled ? "private title startup AOT armed\n" :
-                                "private title AOT validation failed\n");
+          char probe[128];
+          std::snprintf(probe, sizeof(probe), "build=%s\nprivate title AOT %s\n",
+                        kBuildId, enabled ? "armed" : "validation failed");
+          write_probe(probe);
         }
 #endif
         if (result.ok) std::snprintf(message, sizeof(message), "%s / ENTRY %08X",
@@ -481,7 +490,10 @@ int main() {
          benchmark, benchmark_ready, running, show_gs, show_draw_target,
          display_preview);
     if (!first_frame_presented) {
-      write_probe("first monitor frame presented\n");
+      char probe[128];
+      std::snprintf(probe, sizeof(probe), "build=%s\nfirst monitor frame presented\n",
+                    kBuildId);
+      write_probe(probe);
       first_frame_presented = true;
     }
   }
