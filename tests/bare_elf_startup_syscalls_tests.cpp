@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
@@ -148,6 +149,50 @@ int main() {
               memory_size_state.gpr[3] == 0x7Fu &&
               memory_size_state.gpr[4] == 0x005B3BF0u,
           "NFSMW GetMemorySize returns 32 MiB and retires exactly once");
+
+  // Captured NFSMW syscall 0x7c has a0=0x10, a1=stack pointer to a
+  // pointer to a debug string. Only this documented DECI2 subcall is HLE'd.
+  emulator.reset();
+  auto& debug_state = emulator.cpu().state();
+  constexpr std::uint32_t debug_args = 0x1800u;
+  constexpr std::uint32_t debug_text = 0x1900u;
+  emulator.memory().write32(debug_args, debug_text);
+  const std::array<std::uint8_t, 13> debug_bytes = {
+      'G', 'S', ' ', 'r', 'e', 'a', 'd', 'y', '\n', 0x81u, '!', 0u, 0u};
+  for (std::size_t i = 0; i < debug_bytes.size(); ++i)
+    emulator.memory().write8(debug_text + static_cast<std::uint32_t>(i),
+                             debug_bytes[i]);
+  debug_state.gpr[2] = 0x123456u;
+  debug_state.gpr[3] = 0x7Cu;
+  debug_state.gpr[4] = 0x10u;
+  debug_state.gpr[5] = debug_args;
+  const auto debug_cycles = debug_state.cycles;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              debug_state.pc == 0x1004u &&
+              debug_state.cycles == debug_cycles + 1u &&
+              debug_state.gpr[2] == 0x123456u &&
+              emulator.deci2_debug_print_count() == 1u &&
+              std::strcmp(emulator.deci2_last_debug_text(),
+                          "GS ready\\n\\x81!") == 0 &&
+              !emulator.deci2_last_debug_truncated(),
+          "Deci2 debug print captures escaped text and preserves v0");
+  debug_state.pc = 0x1000u;
+  debug_state.gpr[4] = 0x03u; // DECI2 send needs real device state.
+  require(emulator.run_slice(1u) == ps2vita::StopReason::Syscall &&
+              debug_state.pc == 0x1000u &&
+              emulator.deci2_debug_print_count() == 1u,
+          "other Deci2 services remain explicit syscall stops");
+  debug_state.pc = 0x1000u;
+  debug_state.gpr[4] = 0x10u;
+  debug_state.gpr[5] = ps2vita::Memory::kRamSize;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::Syscall &&
+              debug_state.pc == 0x1000u &&
+              emulator.deci2_debug_print_count() == 1u,
+          "invalid debug pointer cannot be read or silently skipped");
+  emulator.reset();
+  require(emulator.deci2_debug_print_count() == 0u &&
+              std::strcmp(emulator.deci2_last_debug_text(), "") == 0,
+          "reset clears stale DECI2 text before the next title run");
 
 
   // Bare-ELF kernel semaphores: use the PS2 ee_sema_t field layout.

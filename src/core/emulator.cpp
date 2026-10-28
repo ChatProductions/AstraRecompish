@@ -36,6 +36,9 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  deci2_last_debug_text_ = {};
+  deci2_debug_print_count_ = 0u;
+  deci2_last_debug_truncated_ = false;
   kernel_semaphores_ = {};
   kernel_threads_ = {};
   current_thread_index_ = 0u;
@@ -68,6 +71,9 @@ bool Emulator::boot_bios() {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  deci2_last_debug_text_ = {};
+  deci2_debug_print_count_ = 0u;
+  deci2_last_debug_truncated_ = false;
   kernel_semaphores_ = {};
   kernel_threads_ = {};
   current_thread_index_ = 0u;
@@ -212,6 +218,50 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     return true;
   }
   switch (number) {
+  case 0x7Cu: { // Deci2Call(0x10, u32*): EE debug-console text.
+    // PCSX2's EE kernel reads a pointer to a NUL-terminated debug string
+    // from *a1 for this specific subcall. Do not accept other DECI2 ops.
+    if (arg0 != 0x10u || (arg1 & 3u) != 0u) return false;
+    const auto is_guest_ram = [](std::uint32_t addr, std::uint32_t size) {
+      const auto phys = (addr & 0xC0000000u) == 0x80000000u
+          ? addr & 0x1FFFFFFFu : addr;
+      return phys != 0u && phys < Memory::kRamSize &&
+             size <= Memory::kRamSize - phys;
+    };
+    if (!is_guest_ram(arg1, 4u) || !memory_.valid(arg1, 4u)) return false;
+    const auto text_ptr = memory_.read32(arg1);
+    if (!is_guest_ram(text_ptr, 1u)) return false;
+    std::array<char, 1024> text{};
+    constexpr char hex[] = "0123456789ABCDEF";
+    constexpr std::size_t kMaxTextBytes = 192u;
+    std::size_t used = 0u;
+    bool terminated = false;
+    for (std::size_t i = 0u; i < kMaxTextBytes; ++i) {
+      if (std::uint64_t{text_ptr} + i > UINT32_MAX ||
+          !is_guest_ram(text_ptr + static_cast<std::uint32_t>(i), 1u) ||
+          !memory_.valid(text_ptr + static_cast<std::uint32_t>(i))) return false;
+      const auto ch = memory_.read8(text_ptr + static_cast<std::uint32_t>(i));
+      if (ch == 0u) { terminated = true; break; }
+      if (ch >= 0x20u && ch <= 0x7Eu && ch != '\\') {
+        text[used++] = static_cast<char>(ch);
+      } else if (ch == '\n' || ch == '\r' || ch == '\t' || ch == '\\') {
+        text[used++] = '\\';
+        text[used++] = ch == '\n' ? 'n' : ch == '\r' ? 'r' :
+                       ch == '\t' ? 't' : '\\';
+      } else {
+        text[used++] = '\\';
+        text[used++] = 'x';
+        text[used++] = hex[ch >> 4];
+        text[used++] = hex[ch & 0xFu];
+      }
+    }
+    // The debug-print syscall does not change the live $v0 return register.
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    deci2_last_debug_text_ = text;
+    deci2_last_debug_truncated_ = !terminated;
+    ++deci2_debug_print_count_;
+    return true;
+  }
   case 0x74u: { // SetSyscall(number, guest_handler); returns void.
     if (arg0 >= kBareElfSyscallSlots ||
         (arg1 != 0u && ((arg1 & 3u) != 0u ||
@@ -603,6 +653,9 @@ void Emulator::service_graphics() {
 void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  deci2_last_debug_text_ = {};
+  deci2_debug_print_count_ = 0u;
+  deci2_last_debug_truncated_ = false;
   kernel_semaphores_ = {};
   kernel_threads_ = {};
   current_thread_index_ = 0u;

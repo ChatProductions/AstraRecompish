@@ -28,7 +28,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-20261029-memorysize-r3";
+constexpr const char* kBuildId = "nfsmw-aot-20261029-deci2-r4";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -61,6 +61,18 @@ void truncate_report(const char* path) {
     sceIoWrite(fd, reset, sizeof(reset) - 1);
     sceIoClose(fd);
   }
+}
+
+void write_deci2_diagnostic(int fd, const ps2vita::Emulator& emulator) {
+  char info[128];
+  std::snprintf(info, sizeof(info),
+      "deci2_print_count=%u\ndeci2_last_truncated=%u\ndeci2_last_text=",
+      emulator.deci2_debug_print_count(),
+      emulator.deci2_last_debug_truncated() ? 1u : 0u);
+  sceIoWrite(fd, info, std::strlen(info));
+  const char* text = emulator.deci2_last_debug_text();
+  sceIoWrite(fd, text, std::strlen(text));
+  sceIoWrite(fd, "\n", 1);
 }
 
 void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) {
@@ -112,6 +124,7 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
   const int fd = sceIoOpen(kFaultPath, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));
+  write_deci2_diagnostic(fd, emulator);
   sceIoClose(fd);
 }
 
@@ -139,6 +152,7 @@ void write_progress(const ps2vita::Emulator& emulator) {
   const int fd = sceIoOpen(kProgressPath, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));
+  write_deci2_diagnostic(fd, emulator);
   sceIoClose(fd);
 }
 

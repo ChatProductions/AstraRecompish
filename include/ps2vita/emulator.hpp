@@ -55,6 +55,10 @@ public:
   // Diagnostics only: distinguish a missing SetupHeap from an unhandled syscall.
   std::uint32_t startup_heap_base() const { return startup_heap_base_; }
   std::uint32_t startup_heap_end() const { return startup_heap_end_; }
+  // Last bounded, single-line Deci2 debug message, exposed for VitaTunnel logs.
+  std::uint32_t deci2_debug_print_count() const { return deci2_debug_print_count_; }
+  const char* deci2_last_debug_text() const { return deci2_last_debug_text_.data(); }
+  bool deci2_last_debug_truncated() const { return deci2_last_debug_truncated_; }
 
 private:
   bool handle_bare_elf_startup_syscall();
@@ -74,6 +78,9 @@ private:
   std::uint32_t startup_stack_top_ = 0;
   std::uint32_t startup_heap_base_ = 0;
   std::uint32_t startup_heap_end_ = 0;
+  std::array<char, 1024> deci2_last_debug_text_{};
+  std::uint32_t deci2_debug_print_count_ = 0;
+  bool deci2_last_debug_truncated_ = false;
   // Four-byte PS2 OSD ConfigParam, retained across guest resets like firmware settings.
   std::uint32_t osd_config_ = 0x00014011u; // OSD2, English, 4:3 RGB, UTC, SPDIF off.
   // Bounded EE kernel subset for one active bare-ELF thread.
