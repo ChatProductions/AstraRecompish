@@ -183,6 +183,11 @@ if(VITA)
   )
 else()
   enable_testing()
+  # A private ELF is an input at runtime, never embedded in this host tool.
+  # Replay enough startup to identify whole syscall/IOP initialization phases
+  # before issuing another title-specific Vita package.
+  add_executable(nfsmw_startup_replay tools/nfsmw_startup_replay.cpp)
+  target_link_libraries(nfsmw_startup_replay PRIVATE ps2core)
   if(ASTRART_GAME_ELF)
     if(NOT EXISTS "${ASTRART_GAME_ELF}")
       message(FATAL_ERROR "ASTRART_GAME_ELF does not exist: ${ASTRART_GAME_ELF}")

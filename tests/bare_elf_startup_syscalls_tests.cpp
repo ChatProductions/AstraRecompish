@@ -194,6 +194,62 @@ int main() {
               std::strcmp(emulator.deci2_last_debug_text(), "") == 0,
           "reset clears stale DECI2 text before the next title run");
 
+  // The next captured NFSMW syscall after DECI2 is 0x78: enable SIF0 DMA
+  // receive-chain mode, not a blanket success return for SIF communications.
+  auto& sif_state = emulator.cpu().state();
+  sif_state.gpr[2] = 0x12345u;
+  sif_state.gpr[3] = 0x78u;
+  const auto sif_cycles = sif_state.cycles;
+  require(emulator.memory().read32(0x1000C000u) == 0u &&
+              emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              sif_state.pc == 0x1004u &&
+              sif_state.cycles == sif_cycles + 1u &&
+              sif_state.gpr[2] == 0x12345u &&
+              emulator.memory().read32(0x1000C000u) == 0x184u,
+          "SifSetDChain enables actual EE SIF0 DMA CHCR without clobbering v0");
+
+  // SIF_SYSREG_SUBADDR is software register 0x80000000. Do not invent
+  // an IOP address: before SIFCMD initialization the real value is zero.
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[3] = 0x7Au;
+  sif_state.gpr[4] = 0x80000000u;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              sif_state.gpr[2] == 0u,
+          "SifGetReg returns zero for uninitialized SUBADDR");
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[3] = 0x79u;
+  sif_state.gpr[5] = 0x00123450u;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit,
+          "SifSetReg accepts software SUBADDR register");
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[3] = 0x7Au;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              sif_state.gpr[2] == 0x00123450u,
+          "SifGetReg observes prior SifSetReg on software register");
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[3] = 0x79u;
+  sif_state.gpr[4] = 3u; // SIF_REG_MSFLAG (EE -> IOP flag).
+  sif_state.gpr[5] = 0x20000u;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              emulator.memory().read32(0x1000F220u) == 0x20000u,
+          "SifSetReg routes physical MSFLAG through SBUS MMIO semantics");
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[3] = 0x7Au;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              sif_state.gpr[2] == 0x20000u,
+          "SifGetReg reads physical SBUS flag");
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[4] = 0x80000003u; // Not one of the three kernel slots.
+  require(emulator.run_slice(1u) == ps2vita::StopReason::Syscall,
+          "unsupported SIF register remains a visible stop");
+  emulator.reset();
+  sif_state.pc = 0x1000u;
+  sif_state.gpr[3] = 0x7Au;
+  sif_state.gpr[4] = 0x80000000u;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              sif_state.gpr[2] == 0u,
+          "reset clears SIF kernel software registers");
+
 
   // Bare-ELF kernel semaphores: use the PS2 ee_sema_t field layout.
   emulator.reset();

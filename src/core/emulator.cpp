@@ -36,6 +36,7 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
   deci2_debug_print_count_ = 0u;
   deci2_last_debug_truncated_ = false;
@@ -71,6 +72,7 @@ bool Emulator::boot_bios() {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
   deci2_debug_print_count_ = 0u;
   deci2_last_debug_truncated_ = false;
@@ -218,6 +220,34 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     return true;
   }
   switch (number) {
+  case 0x79u: // sceSifSetReg(id, value): kernel software or SBUS hardware.
+  case 0x7Au: { // sceSifGetReg(id): return the actual current register.
+    const bool system_reg = (arg0 & 0x80000000u) != 0u;
+    std::uint32_t value = 0u;
+    std::uint32_t mmio = 0u;
+    std::size_t slot = 0u;
+    if (system_reg) {
+      slot = arg0 & 0x7FFFFFFFu;
+      if (slot >= sif_system_regs_.size()) return false;
+      value = sif_system_regs_[slot];
+    } else {
+      if (arg0 < 1u || arg0 > 4u) return false;
+      mmio = Memory::kHwBase + 0xF200u + (arg0 - 1u) * 16u;
+      value = memory_.read32(mmio);
+    }
+    if (number == 0x7Au) return cpu_.retire_trapped_syscall(value);
+    if (!cpu_.retire_trapped_syscall(0u)) return false;
+    if (system_reg) sif_system_regs_[slot] = arg1;
+    else memory_.write32(mmio, arg1);
+    return true;
+  }
+  case 0x78u: { // sceSifSetDChain(): enable EE SIF0 IOP-to-EE chain DMA.
+    // PS2SDK specifies channel 5 CHCR=0x184 (TIE|CHAIN|STR).
+    // Retire first: if the syscall is in a delay slot, no MMIO side effect.
+    if (!cpu_.retire_trapped_syscall(0u, false)) return false;
+    memory_.write32(Memory::kHwBase + 0xC000u, 0x184u);
+    return true;
+  }
   case 0x7Cu: { // Deci2Call(0x10, u32*): EE debug-console text.
     // PCSX2's EE kernel reads a pointer to a NUL-terminated debug string
     // from *a1 for this specific subcall. Do not accept other DECI2 ops.
@@ -653,6 +683,7 @@ void Emulator::service_graphics() {
 void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
+  sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
   deci2_debug_print_count_ = 0u;
   deci2_last_debug_truncated_ = false;

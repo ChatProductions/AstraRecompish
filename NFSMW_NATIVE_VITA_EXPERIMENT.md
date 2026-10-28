@@ -1,8 +1,48 @@
 # NFSMW 2005 PS2 → Vita: AstraRecomp research checkpoint 0.3
 
 This branch is an experimental *native recompiler* starting point, not a
-playable PS2 game or an NFSMW VPK. It does not modify the existing NFSMW Vita
-port, its car files, or any saves.
+playable PS2 game. It does not modify the existing NFSMW Vita port, its car
+files, or any saves. Private title-specific test VPKs are distributed through
+VitaTunnel-Relay; `ux0:data/ps2vita/boot.elf` is supplied independently and
+is **never** included inside these VPKs.
+
+## October 29, 2026: host replay replaces the VPK-per-syscall cycle
+
+Vita r4 stopped at `0x00495904`, syscall `0x78` (`sceSifSetDChain`), after
+6,855,355 guest cycles. Its preceding debug call printed `main() argc = 0`.
+The new host-only `nfsmw_startup_replay` tool reproduces **exactly** that
+cycle count, instruction address, syscall and debug string using the user's
+private ELF without a Vita transfer or any private binary in this repository.
+This is a debugging interpreter on the development computer, **not** a
+proposed PS2 emulator to install on Vita.
+
+The EE-side SIF0 CHCR initialization (`0x184`) and the real/software SIF
+register accesses (`sceSifGetReg`/`sceSifSetReg`) now have narrowly scoped
+implementations with host regression tests. With these calls handled, the
+same guest reaches `0x00496D28`–`0x00496D38`: a loop reading SIF register 4
+(`SMFLAG`) until bit `0x00020000` (`SIF_STAT_CMDINIT`) becomes set.
+The replay detects this loop at approximately 7.2 million cycles with
+`sif_smflag=0` and **`iop_cycles=0`**.
+
+This is a real architectural dependency: the bare-ELF path currently does
+not boot or execute the IOP firmware/modules, so no IOP-side SIFCMD handshake
+can occur. Simply fabricating the ready bit would conceal the problem and
+lead to more arbitrary startup failures. There is therefore **no new Vita
+test VPK** for these host-only changes. A genuine IOP service replacement
+(SIFCMD/RPC and required module/asset services), or an explicitly supported
+IOP execution environment, must be designed and validated first.
+
+To reproduce the stall on a host C++17 toolchain, with your own private ELF:
+
+```sh
+cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
+cmake --build build-host --target nfsmw_startup_replay -j4
+build-host/nfsmw_startup_replay /absolute/path/to/boot.elf 15000000
+```
+
+The expected final diagnostic is `reason=blocked-sifcmd-no-iop`, not
+successful game initialization. The game ELF and any generated AOT are never
+placed in source control by this workflow.
 
 ## Proven on the supplied USA PS2 ELF
 
@@ -29,8 +69,8 @@ Original filename: `SLUS_213.51` (not included in source distributions).
   words at each native entry, falling back to the interpreter if the ELF
   differs. A host test deliberately modifies one instruction and confirms
   that no native instructions execute.
-- 25 AstraIR unit tests pass; the generated package was linked into a host
-  C++17 probe. No VitaSDK, Vita3K, or physical Vita test has been completed.
+- 25 AstraIR unit tests passed at the original checkpoint. Later VitaTunnel
+  hardware testing and the host startup replay are described above.
 
 These results **do not** establish that the game can boot, load assets, or render.
 
@@ -67,7 +107,7 @@ branch, or manually via **Run workflow**. It does **not** include the private
 NFSMW executable or any game-specific AOT instructions, and therefore does
 not constitute an NFSMW game build.
 
-## Opt-in Vita experiment, once VitaSDK is installed
+## Opt-in Vita experiment (maintainer build environment)
 
 A local Vita build can include the private title package without committing
 the proprietary ELF or the generated C++ to this repository:
@@ -86,7 +126,7 @@ builds remain interpreter-only. If the ELF's loaded code differs, individual
 AOT entries reject it and fall back to interpretation.
 
 This is a development instrumentation path, **not a playable Vita port**.
-No Vita-side binary has yet been built or measured in this environment.
+The user does not need VitaSDK to install a test VPK through VitaTunnel.
 
 ## Work required to turn this into a game
 

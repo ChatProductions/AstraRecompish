@@ -78,6 +78,9 @@ private:
   std::uint32_t startup_stack_top_ = 0;
   std::uint32_t startup_heap_base_ = 0;
   std::uint32_t startup_heap_end_ = 0;
+  // SIF_SYSREG_* are EE kernel software slots, not physical SBUS MMIO.
+  // The real four SIF_REG_* values live in Memory's SBUS registers.
+  std::array<std::uint32_t, 3> sif_system_regs_{};
   std::array<char, 1024> deci2_last_debug_text_{};
   std::uint32_t deci2_debug_print_count_ = 0;
   bool deci2_last_debug_truncated_ = false;
