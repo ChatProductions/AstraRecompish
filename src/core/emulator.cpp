@@ -478,6 +478,13 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     startup_heap_end_ = static_cast<std::uint32_t>(end);
     return true;
   }
+  case 0x3Eu: { // EndOfHeap(): return the upper bound configured by SetupHeap.
+    // The observed NFS:MW stop at 0x00495504 executes this wrapper.
+    // Do not synthesize a boundary if SetupHeap has not succeeded.
+    if (startup_heap_end_ == 0u || startup_heap_end_ <= startup_heap_base_)
+      return false;
+    return cpu_.retire_trapped_syscall(startup_heap_end_);
+  }
   case 0x40u: { // CreateSema(ee_sema_t *): six little-endian 32-bit fields.
     // Input layout: count, max_count, init_count, wait_threads, attr, option.
     constexpr std::size_t kDescriptorBytes = 24u;
