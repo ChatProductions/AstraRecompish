@@ -29,6 +29,7 @@ public:
   // Opt-in native IOP service replacement for the host startup experiment.
   // Does not enable a second CPU, or turn unknown RPCs into fake successes.
   void enable_native_iop_services(bool enabled);
+  void enable_verified_ioprp_reboot(bool enabled);
   const NativeIopServices& native_iop_services() const { return native_iop_; }
   void service_graphics();
   void reset();
@@ -82,6 +83,8 @@ private:
   bool ready_ = false;
   bool bare_elf_startup_syscalls_ = false;
   bool native_iop_enabled_ = false;
+  bool native_ioprp_verified_ = false;
+  std::uint64_t native_iop_reboot_ready_at_ = 0u;
   std::uint32_t sif_dma_last_id_ = 0u;
   std::uint32_t startup_stack_top_ = 0;
   std::uint32_t startup_heap_base_ = 0;

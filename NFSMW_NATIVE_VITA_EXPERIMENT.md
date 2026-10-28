@@ -6,6 +6,39 @@ files, or any saves. Private title-specific test VPKs are distributed through
 VitaTunnel-Relay; `ux0:data/ps2vita/boot.elf` is supplied independently and
 is **never** included inside these VPKs.
 
+## VitaTunnel r5: external IOPRP image validation and bounded HLE reboot
+
+An updated title-specific VPK (`NFMRA0001`) now incorporates the native IOP
+SIFCMD/RPC/CDVD initialization model, includes a checked ROMDIR parser for the
+separately supplied `IOPRP280.IMG`, and writes more detailed startup/fault
+diagnostics. The package has only `eboot.bin` and `sce_sys/param.sfo`.
+
+On TRIANGLE (load external ELF), the Vita checks these IOP image locations:
+
+1. `ux0:data/ps2vita/NFS/IOPRP280.IMG` (preferred)
+2. `ux0:data/ps2vita/IOPRP280.IMG`
+3. `ux0:data/ps2vita/nfs/IOPRP280.IMG`
+4. `ux0:data/nfsmw/NFS/IOPRP280.IMG`
+5. `ux0:data/nfsmw/IOPRP280.IMG`
+
+The first readable file is parsed as an IOPRP ROMDIR container. The result,
+resolved Vita path, module counts, SIFCMD/CDVD module names and the IOP reset
+command appear in the ordinary VitaTunnel-uploaded text logs. An absent or
+malformed image does not cause a false reboot success.
+
+With a valid ROMDIR and `IOPBTCONF`, a request for the observed IOPRP reboot
+starts a **bounded native IOP service restart** after a guest-cycle delay.
+This does not execute the proprietary IOP IRX modules. It reinstalls only the
+services currently implemented in native C++, with any unknown SIF/RPC call
+remaining an explicit stop. This is an on-device *diagnostic checkpoint*, not
+an assertion that the game or all its IOP modules are supported.
+
+The user's already-installed `ux0:data/ps2vita/boot.elf` and
+`IOPRP280.IMG` remain external and are neither moved nor altered. Install
+through VitaTunnel (Square to sync/download/install, Triangle in the installed
+test app to load `boot.elf`, Cross to run). Reopen VitaTunnel to send the
+`startup.txt`, `progress.txt`, and `fault.txt` diagnostics.
+
 ## October 29, 2026: host replay replaces the VPK-per-syscall cycle
 
 ### Native IOP service milestone (later October 29)

@@ -8,6 +8,7 @@ constexpr std::uint32_t kSubAddress = 0x1D000010u;
 constexpr std::uint32_t kSmFlag = 0x1D000030u;
 constexpr std::uint32_t kSifInit = 0x00010000u;
 constexpr std::uint32_t kCmdInit = 0x00020000u;
+constexpr std::uint32_t kBootEnd = 0x00040000u;
 constexpr std::uint32_t kSystemCommand = 0x80000000u;
 constexpr std::uint32_t kChangeAddress = kSystemCommand | 0u;
 constexpr std::uint32_t kInitCommand = kSystemCommand | 2u;
@@ -41,7 +42,27 @@ void NativeIopServices::reset() {
   pending_signal_sema_ = 0u;
   bound_cdvd_client_ = 0u;
   reboot_count_ = reboot_mode_ = 0u;
+  reboot_completed_ = 0u;
   reboot_arg_ = {};
+  verified_ioprp_ = false;
+}
+
+bool NativeIopServices::complete_reboot(Memory& memory) {
+  if (phase_ != Phase::RebootPending || !verified_ioprp_) return false;
+  // Re-create the SIFCMD endpoint as a *native service* after accepting a
+  // verified ROMDIR image. No IOP IRX/ELF instructions execute in this path.
+  // Unsupported servers after the reboot still stop as unknown commands.
+  if (!memory.iop_valid(kReceiveAddress, 128u)) return false;
+  for (unsigned i = 0; i < 128u; ++i)
+    memory.iop_write8(kReceiveAddress + i, 0u);
+  memory.iop_write32(kSubAddress, kReceiveAddress);
+  memory.iop_write32(kSmFlag, kSifInit | kCmdInit | kBootEnd);
+  ee_receive_address_ = 0u;
+  bound_cdvd_client_ = 0u;
+  pending_signal_sema_ = 0u;
+  phase_ = Phase::AwaitingInit;
+  ++reboot_completed_;
+  return true;
 }
 
 std::uint32_t NativeIopServices::take_pending_signal_sema() {
@@ -122,12 +143,13 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
           ? static_cast<char>(ch) : '?';
     }
     ++reboot_count_;
+    if (verified_ioprp_) {
+      phase_ = Phase::RebootPending;
+      return true;
+    }
     phase_ = Phase::RebootRequired;
     unsupported_cid_ = cid;
-    // The reset packet is recognized, but a reboot requires the actual IOP
-    // module image/ROM or a replacement module loader. Do not pretend the
-    // CDVD service survived a reboot or set BOOTEND without starting it.
-    return false;
+    return false; // No IOP image to validate or start a native replacement.
   }
   case kRpcBind:
     if (packet_size < 36u) return false;

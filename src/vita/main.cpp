@@ -2,6 +2,7 @@
 #include "ps2vita/emulator.hpp"
 #include "ps2vita/execution_budget.hpp"
 #include "ps2vita/gs_display_preview.hpp"
+#include "ps2vita/ioprp_image.hpp"
 #include "screen.hpp"
 
 #include <psp2/ctrl.h>
@@ -28,7 +29,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-20261029-deci2-r4";
+constexpr const char* kBuildId = "nfsmw-aot-20261029-native-iop-r5";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -37,6 +38,33 @@ constexpr std::uint64_t kProgressInterval = 1000000u;
 // replacing the fixed one-slice-per-VBlank throughput ceiling. The deadline
 // is soft: synchronous graphics inside one quantum can exceed this budget.
 constexpr ps2vita::ExecutionBudget kFrameExecution{8000u, 2000u, 1024u};
+ps2vita::IoprpSummary g_ioprp_summary{};
+const char* g_ioprp_path = "not found";
+
+void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
+  const auto& iop = emulator.native_iop_services();
+  char report[768];
+  std::snprintf(report, sizeof(report),
+      "ioprp_path=%s\nioprp_valid=%u\nioprp_size=%u\n"
+      "ioprp_entries=%u\nioprp_bootconf=%u\nioprp_sifcmd=%u\n"
+      "ioprp_cdvd=%u\nioprp_error=%s\n"
+      "native_iop_phase=%u\nnative_iop_packets=%u\n"
+      "native_iop_unknown_cid=%08X\nnative_iop_unknown_sid=%08X\n"
+      "native_cdvd_init_calls=%u\nnative_iop_reboot_requests=%u\n"
+      "native_iop_reboot_completed=%u\nnative_iop_reboot_mode=%u\n"
+      "native_iop_reboot_arg=%s\n",
+      g_ioprp_path, g_ioprp_summary.valid ? 1u : 0u,
+      g_ioprp_summary.image_size, g_ioprp_summary.entries,
+      g_ioprp_summary.has_bootconf ? 1u : 0u,
+      g_ioprp_summary.has_sifcmd ? 1u : 0u,
+      g_ioprp_summary.has_cdvd ? 1u : 0u,
+      g_ioprp_summary.error,
+      static_cast<unsigned>(iop.phase()), iop.command_count(),
+      iop.unsupported_cid(), iop.unsupported_rpc_sid(),
+      iop.cdvd_init_calls(), iop.reboot_count(), iop.reboot_completed(),
+      iop.reboot_mode(), iop.reboot_arg());
+  sceIoWrite(fd, report, std::strlen(report));
+}
 
 std::uint64_t benchmark_clock_microseconds() {
   return sceKernelGetProcessTimeWide();
@@ -125,6 +153,7 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));
   write_deci2_diagnostic(fd, emulator);
+  write_iop_diagnostic(fd, emulator);
   sceIoClose(fd);
 }
 
@@ -153,6 +182,7 @@ void write_progress(const ps2vita::Emulator& emulator) {
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));
   write_deci2_diagnostic(fd, emulator);
+  write_iop_diagnostic(fd, emulator);
   sceIoClose(fd);
 }
 
@@ -227,6 +257,29 @@ bool read_file(const char* path, std::vector<std::uint8_t>& bytes) {
   }
   sceIoClose(fd);
   return true;
+}
+
+void inspect_external_ioprp() {
+  g_ioprp_summary = {};
+  g_ioprp_summary.error = "IOPRP280.IMG not found in searched data folders";
+  g_ioprp_path = "not found";
+  // Existing Vita files are inputs. Neither the image nor boot.elf goes in
+  // the installable VPK. Also check the existing NFS data directory.
+  static constexpr const char* kPaths[] = {
+      "ux0:data/ps2vita/NFS/IOPRP280.IMG",
+      "ux0:data/ps2vita/IOPRP280.IMG",
+      "ux0:data/ps2vita/nfs/IOPRP280.IMG",
+      "ux0:data/nfsmw/NFS/IOPRP280.IMG",
+      "ux0:data/nfsmw/IOPRP280.IMG",
+  };
+  std::vector<std::uint8_t> bytes;
+  for (const char* path : kPaths) {
+    bytes.clear();
+    if (!read_file(path, bytes)) continue;
+    g_ioprp_path = path;
+    g_ioprp_summary = ps2vita::inspect_ioprp_image(bytes.data(), bytes.size());
+    return; // A found-but-corrupt image should be diagnosed, not hidden.
+  }
 }
 
 void draw(Screen& screen, const ps2vita::Emulator& emu, const char* message,
@@ -437,11 +490,20 @@ int main() {
         reset_progress();
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
         if (result.ok && loaded_external) {
+          inspect_external_ioprp();
+          emulator.enable_native_iop_services(true);
+          const bool usable_ioprp = g_ioprp_summary.valid &&
+                                   g_ioprp_summary.has_bootconf;
+          emulator.enable_verified_ioprp_reboot(usable_ioprp);
           const bool enabled = emulator.cpu().set_startup_aot_package(
               &ps2vita::generated_private_game_aot_package());
-          char probe[128];
-          std::snprintf(probe, sizeof(probe), "build=%s\nprivate title AOT %s\n",
-                        kBuildId, enabled ? "armed" : "validation failed");
+          char probe[512];
+          std::snprintf(probe, sizeof(probe),
+              "build=%s\nprivate title AOT %s\n"
+              "native_iop=enabled\nioprp=%s\npath=%s\nentries=%u\n",
+              kBuildId, enabled ? "armed" : "validation failed",
+              usable_ioprp ? "ROMDIR validated" : g_ioprp_summary.error,
+              g_ioprp_path, g_ioprp_summary.entries);
           write_probe(probe);
         }
 #endif

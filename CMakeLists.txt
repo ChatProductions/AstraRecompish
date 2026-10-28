@@ -105,6 +105,7 @@ add_library(ps2core
   src/core/gif.cpp
   src/core/gs.cpp
   src/core/iop_cpu.cpp
+  src/core/ioprp_image.cpp
   src/core/memory.cpp
   src/core/native_iop_services.cpp
   src/core/spu2_adpcm.cpp
@@ -235,6 +236,12 @@ else()
     target_compile_options(native_iop_services_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
   endif()
   add_test(NAME native_iop_services_tests COMMAND native_iop_services_tests)
+  add_executable(ioprp_image_tests tests/ioprp_image_tests.cpp)
+  target_link_libraries(ioprp_image_tests PRIVATE ps2core)
+  if(NOT MSVC)
+    target_compile_options(ioprp_image_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+  add_test(NAME ioprp_image_tests COMMAND ioprp_image_tests)
   add_executable(cpu_dispatch_tests tests/cpu_dispatch_tests.cpp)
   target_link_libraries(cpu_dispatch_tests PRIVATE ps2core)
   add_executable(cpu_nop_tests tests/cpu_nop_tests.cpp)

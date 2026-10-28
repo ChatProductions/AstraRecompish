@@ -28,6 +28,8 @@ Emulator::Emulator()
 
 void Emulator::enable_native_iop_services(bool enabled) {
   native_iop_enabled_ = enabled && image_.ok;
+  native_ioprp_verified_ = false;
+  native_iop_reboot_ready_at_ = 0u;
   sif_dma_last_id_ = 0u;
   if (native_iop_enabled_) native_iop_.boot(memory_);
   else {
@@ -37,6 +39,11 @@ void Emulator::enable_native_iop_services(bool enabled) {
     memory_.write32(0x1000F230u, 0x00030000u);
     memory_.write32(0x1000F210u, 0u);
   }
+}
+
+void Emulator::enable_verified_ioprp_reboot(bool enabled) {
+  native_ioprp_verified_ = enabled && native_iop_enabled_;
+  native_iop_.permit_reboot_with_verified_image(native_ioprp_verified_);
 }
 
 ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
@@ -49,6 +56,8 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   native_iop_enabled_ = false;
+  native_ioprp_verified_ = false;
+  native_iop_reboot_ready_at_ = 0u;
   native_iop_.reset();
   sif_dma_last_id_ = 0u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
@@ -88,6 +97,8 @@ bool Emulator::boot_bios() {
   ee_cycles_until_iop_ = 8u;
   bare_elf_startup_syscalls_ = false;
   native_iop_enabled_ = false;
+  native_ioprp_verified_ = false;
+  native_iop_reboot_ready_at_ = 0u;
   native_iop_.reset();
   sif_dma_last_id_ = 0u;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
@@ -175,6 +186,11 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
     const auto executed = static_cast<std::uint32_t>(
         cpu_.state().cycles - cycles_before);
     remaining -= executed;
+    if (native_iop_reboot_ready_at_ != 0u &&
+        cpu_.state().cycles >= native_iop_reboot_ready_at_) {
+      native_iop_.complete_reboot(memory_);
+      native_iop_reboot_ready_at_ = 0u;
+    }
     if (!image_.ok) {
       ee_cycles_until_iop_ -= executed;
       if (ee_cycles_until_iop_ == 0u) {
@@ -277,6 +293,8 @@ bool Emulator::handle_bare_elf_startup_syscall() {
         memory_.iop_write8(d.dst + j, memory_.read8(d.src + j));
       if (!native_iop_.receive(memory_, d.dst, d.size,
                                sif_system_regs_[1])) return false;
+      if (native_iop_.phase() == NativeIopServices::Phase::RebootPending)
+        native_iop_reboot_ready_at_ = state.cycles + 8192u;
       const auto sema_id = native_iop_.take_pending_signal_sema();
       if (sema_id != 0u) {
         if (sema_id > kernel_semaphores_.size()) return false;
@@ -752,9 +770,13 @@ void Emulator::service_graphics() {
 
 void Emulator::reset() {
   ee_cycles_until_iop_ = 8u;
+  native_iop_reboot_ready_at_ = 0u;
   sif_dma_last_id_ = 0u;
   native_iop_.reset();
-  if (native_iop_enabled_ && image_.ok) native_iop_.boot(memory_);
+  if (native_iop_enabled_ && image_.ok) {
+    native_iop_.boot(memory_);
+    native_iop_.permit_reboot_with_verified_image(native_ioprp_verified_);
+  }
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   sif_system_regs_ = {};
   deci2_last_debug_text_ = {};

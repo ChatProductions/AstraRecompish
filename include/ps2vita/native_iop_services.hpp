@@ -15,11 +15,18 @@ class NativeIopServices {
 public:
   static constexpr std::uint32_t kReceiveAddress = 0x001F0000u;
   enum class Phase : std::uint8_t {
-    Offline, AwaitingInit, CmdConnected, RpcReady, RebootRequired
+    Offline, AwaitingInit, CmdConnected, RpcReady, RebootRequired,
+    RebootPending
   };
 
   void reset();
   void boot(Memory& memory);
+  void permit_reboot_with_verified_image(bool permitted) {
+    verified_ioprp_ = permitted;
+  }
+  // An IOP image was accepted by the ROMDIR parser and the IOP startup delay
+  // has elapsed. Starts only the currently implemented native HLE services.
+  bool complete_reboot(Memory& memory);
   // A descriptor was copied into IOP RAM using EE SIF1 DMA semantics.
   // Returns false when a recognized command is malformed or unsupported.
   bool receive(Memory& memory, std::uint32_t destination,
@@ -32,6 +39,7 @@ public:
   std::uint32_t unsupported_rpc_sid() const { return unsupported_rpc_sid_; }
   std::uint32_t cdvd_init_calls() const { return cdvd_init_calls_; }
   std::uint32_t reboot_count() const { return reboot_count_; }
+  std::uint32_t reboot_completed() const { return reboot_completed_; }
   std::uint32_t reboot_mode() const { return reboot_mode_; }
   const char* reboot_arg() const { return reboot_arg_.data(); }
   // Returns the EE semaphore to signal after an IOP RPC_END notification.
@@ -50,6 +58,8 @@ private:
   std::uint32_t reboot_count_ = 0;
   std::uint32_t reboot_mode_ = 0;
   std::array<char, 81> reboot_arg_{};
+  bool verified_ioprp_ = false;
+  std::uint32_t reboot_completed_ = 0;
 };
 
 } // namespace ps2vita

@@ -141,6 +141,28 @@ int main() {
   require(!services.receive(memory, kReceiver, 16u, kCmdDataEe) &&
               memory.read32(kSregs) == 0u,
           "RPC notification never writes to a forged MMIO SREG pointer");
+
+  services.boot(memory);
+  services.permit_reboot_with_verified_image(true);
+  memory.write32(kCmdDataEe + 28u, kSregs);
+  packet(memory, 0x80000002u, 0u, kEeReceive, 20u);
+  require(services.receive(memory, kReceiver, 20u, kCmdDataEe),
+          "verified-image scenario completes SIFCMD initialization");
+  packet(memory, 0x80000002u, 1u, 0u, 16u);
+  require(services.receive(memory, kReceiver, 16u, kCmdDataEe),
+          "verified-image scenario completes RPC initialization");
+  packet(memory, 0x80000003u, 0u, 9u, 104u);
+  memory.iop_write32(kReceiver + 20u, 0u);
+  for (unsigned i = 0; i < 9u; ++i)
+    memory.iop_write8(kReceiver + 24u + i,
+                      static_cast<std::uint8_t>(kRebootPath[i]));
+  require(services.receive(memory, kReceiver, 104u, kCmdDataEe) &&
+              services.phase() == ps2vita::NativeIopServices::Phase::RebootPending &&
+              services.complete_reboot(memory) &&
+              services.phase() == ps2vita::NativeIopServices::Phase::AwaitingInit &&
+              services.reboot_completed() == 1u &&
+              (memory.read32(kSmFlagEe) & 0x70000u) == 0x70000u,
+          "verified IOPRP enables a bounded native IOP service restart");
   std::puts("Native IOP service handshake tests passed.");
   return 0;
 }
