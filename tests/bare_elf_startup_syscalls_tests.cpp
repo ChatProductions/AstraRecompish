@@ -133,6 +133,22 @@ int main() {
               emulator.cpu().state().pc == 0x1000u,
           "other kernel services are not silently skipped");
 
+  // Real NFSMW wrapper at 0x00495980 is `addiu $v1, $zero, 0x7f`,
+  // followed by syscall at 0x00495984. GetMemorySize returns bytes.
+  emulator.reset();
+  set_stack_args(emulator);
+  auto& memory_size_state = emulator.cpu().state();
+  memory_size_state.gpr[2] = 0x1234u;
+  memory_size_state.gpr[3] = 0x7Fu;
+  const auto memory_size_cycles = memory_size_state.cycles;
+  require(emulator.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              memory_size_state.pc == 0x1004u &&
+              memory_size_state.cycles == memory_size_cycles + 1u &&
+              memory_size_state.gpr[2] == ps2vita::Memory::kRamSize &&
+              memory_size_state.gpr[3] == 0x7Fu &&
+              memory_size_state.gpr[4] == 0x005B3BF0u,
+          "NFSMW GetMemorySize returns 32 MiB and retires exactly once");
+
 
   // Bare-ELF kernel semaphores: use the PS2 ee_sema_t field layout.
   emulator.reset();

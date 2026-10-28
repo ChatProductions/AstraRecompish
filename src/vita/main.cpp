@@ -28,7 +28,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-20261029-vrsqrt-r2";
+constexpr const char* kBuildId = "nfsmw-aot-20261029-memorysize-r3";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif

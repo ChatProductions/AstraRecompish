@@ -485,6 +485,10 @@ bool Emulator::handle_bare_elf_startup_syscall() {
       return false;
     return cpu_.retire_trapped_syscall(startup_heap_end_);
   }
+  case 0x7Fu: // GetMemorySize(): amount of installed EE RDRAM in bytes.
+    // The NFSMW ELF calls this through its wrapper at 0x00495984. Report
+    // the actual guest RAM capacity so the game's heap/TLB checks agree.
+    return cpu_.retire_trapped_syscall(Memory::kRamSize);
   case 0x40u: { // CreateSema(ee_sema_t *): six little-endian 32-bit fields.
     // Input layout: count, max_count, init_count, wait_threads, attr, option.
     constexpr std::size_t kDescriptorBytes = 24u;
