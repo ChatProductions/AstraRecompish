@@ -366,6 +366,36 @@ int main() {
               kernel_state.gpr[2] == UINT64_MAX,
           "deleted guest EE thread cannot be deleted a second time");
 
+  // NFSMW 2005 startup stopped at PC 0x004955D4 with $v1=0x4B.
+  // GetOsdConfigParam returns a packed four-byte ConfigParam at $a0.
+  emulator.reset();
+  emulator.enable_bare_elf_startup_syscalls(true);
+  constexpr std::uint32_t osd_output = ps2vita::Memory::kRamSize - 0x80u;
+  emulator.memory().write32(osd_output, 0xDEADBEEFu);
+  emulator.memory().write32(osd_output + 4u, 0xA5A5A5A5u);
+  kernel_state.gpr[2] = 2u; // Void syscall must not overwrite a live $v0.
+  const auto before_osd = kernel_state.cycles;
+  require(invoke_kernel(0x4Bu, osd_output) == ps2vita::StopReason::StepLimit &&
+              kernel_state.pc == 0x1004u &&
+              kernel_state.cycles == before_osd + 1u &&
+              kernel_state.gpr[2] == 2u &&
+              emulator.memory().read32(osd_output) == 0x00014011u &&
+              emulator.memory().read32(osd_output + 4u) == 0xA5A5A5A5u,
+          "GetOsdConfigParam writes the 32-bit English OSD profile once");
+
+  require(invoke_kernel(0x4Bu, osd_output + 1u) ==
+              ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
+          "misaligned GetOsdConfigParam pointer stays a visible stop");
+  require(invoke_kernel(0x4Bu, ps2vita::Memory::kRamSize - 2u) ==
+              ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
+          "out-of-bounds GetOsdConfigParam pointer stays a visible stop");
+  require(invoke_kernel(0x4Bu, ps2vita::Memory::kHwBase) ==
+              ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
+          "GetOsdConfigParam never writes to EE MMIO");
+  require(invoke_kernel(0x4Bu, 0u) ==
+              ps2vita::StopReason::Syscall && kernel_state.pc == 0x1000u,
+          "GetOsdConfigParam rejects a null destination");
+
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;
 }
