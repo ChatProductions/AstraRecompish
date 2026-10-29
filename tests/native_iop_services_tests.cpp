@@ -367,6 +367,27 @@ int main() {
               static_cast<std::int32_t>(memory.read32(kResult)) == -9,
           "FILEIO rejects already-closed guest descriptors");
   services.take_pending_signal_sema();
+  // io_common.h defines FIO_O_RDONLY=1. Zero and unimplemented modifier
+  // bits must not reach the host backend or manufacture an RPC reply.
+  memory.iop_write32(kFileBuf, 0u);
+  memory.write32(kResult, 0xBEEFBEEFu);
+  require(!file_call(0u, 272u) &&
+              files.opens == 1 &&
+              memory.read32(kResult) == 0xBEEFBEEFu &&
+              services.take_pending_signal_sema() == 0u,
+          "zero FILEIO OPEN mode is not PS2 read-only");
+  memory.iop_write32(kFileBuf, 0x8001u); // NOWAIT flag unimplemented.
+  require(!file_call(0u, 272u) &&
+              files.opens == 1 &&
+              memory.read32(kResult) == 0xBEEFBEEFu &&
+              services.take_pending_signal_sema() == 0u,
+          "unsupported FILEIO OPEN modifier cannot reach host backend");
+  memory.iop_write32(kFileBuf, 3u); // FIO_O_RDWR
+  require(file_call(0u, 272u) &&
+              static_cast<std::int32_t>(memory.read32(kResult)) == -30 &&
+              files.opens == 1,
+          "read-write FILEIO OPEN receives EROFS without host access");
+  services.take_pending_signal_sema();
   // r15 hardware reported fno=0, send_size=1048, recv_size=4, mode=1,
   // semaphore=15, and reject_flags=128. The 1048-byte retail payload is
   // not captured, so it cannot be treated as PS2SDK's 272-byte OPEN ABI.
