@@ -33,6 +33,7 @@ jobs:
       - name: Smoke-test typed host replay diagnostics without private game assets
         run: |
           build-host/nfsmw_startup_replay /tmp/astrarecomp-private-aot-smoke.elf 100000 --native-iop > /tmp/nfsmw-host-replay.txt
+          cat /tmp/nfsmw-host-replay.txt
           grep -q '^replay=host-interpreter-only$' /tmp/nfsmw-host-replay.txt
           grep -q '^reason=' /tmp/nfsmw-host-replay.txt
           grep -q '^rpc_client=00000000$' /tmp/nfsmw-host-replay.txt
