@@ -152,11 +152,17 @@ bool NativeIopServices::execute_fileio(
     }
     if (!terminated) return false;
     fileio_last_path_ = path;
-    // No writes, creates, or truncates on a device containing user data.
-    if ((flags & 0x0003u) > 1u ||
-        (flags & (0x0100u | 0x0200u | 0x0400u | 0x0800u)))
-      answer = -30; // EROFS
-    else {
+    // PS2 FIO_O_RDONLY is 0x0001, not zero (io_common.h).
+    // Never forward unverified access or modifier bits to the Vita backend.
+    // Write/create/truncate requests get a real read-only refusal; unknown
+    // combinations fail closed without producing an RPC reply.
+    if (flags != 0x0001u) {
+      if ((flags & 0x0003u) == 2u ||
+          (flags & 0x0003u) == 3u ||
+          (flags & (0x0100u | 0x0200u | 0x0400u | 0x0800u)) != 0u)
+        answer = -30; // EROFS
+      else return false; // Invalid/unsupported FILEIO OPEN mode.
+    } else {
       std::size_t free_slot = open_files_.size();
       for (std::size_t i = 0; i < open_files_.size(); ++i)
         if (!open_files_[i].in_use) { free_slot = i; break; }
