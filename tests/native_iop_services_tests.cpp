@@ -369,6 +369,10 @@ int main() {
   services.take_pending_signal_sema();
   // io_common.h defines FIO_O_RDONLY=1. Zero and unimplemented modifier
   // bits must not reach the host backend or manufacture an RPC reply.
+  // Rebuild the valid synthetic pathname after seek/close reused this buffer.
+  for (unsigned i = 0; i < sizeof(kName); ++i)
+    memory.iop_write8(kFileBuf + 4u + i,
+                      static_cast<std::uint8_t>(kName[i]));
   memory.iop_write32(kFileBuf, 0u);
   memory.write32(kResult, 0xBEEFBEEFu);
   require(!file_call(0u, 272u) &&
