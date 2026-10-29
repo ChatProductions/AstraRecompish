@@ -25,11 +25,15 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
               "rpc_recvbuf=%08X\nrpc_recv_size=%u\nrpc_mode=%u\n"
               "rpc_original_packet=%08X\nrpc_semaphore=%u\n"
               "rpc_fileio_candidate=%u\nrpc_reject_flags=%u\n"
+              "rpc_fileio_dma_source=%08X\nrpc_fileio_dma_size=%u\n"
+              "rpc_fileio_dma_exact=%u\n"
               "fileio_binds=%u\nfileio_calls=%u\nfileio_bytes_read=%u\n",
               rpc.packet_size, rpc.client, rpc.bound_fileio_client,
               rpc.server, rpc.function, rpc.send_size, rpc.recvbuf,
               rpc.recv_size, rpc.mode, rpc.original_packet, rpc.sema,
               rpc.fileio_candidate, rpc.reject_flags,
+              rpc.fileio_dma_source, rpc.fileio_dma_size,
+              rpc.fileio_dma_exact,
               services.fileio_bind_count(), services.fileio_request_count(),
               services.fileio_total_read());
 }

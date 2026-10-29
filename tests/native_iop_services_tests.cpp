@@ -374,7 +374,16 @@ int main() {
                       static_cast<std::uint8_t>(kName[i]));
   const auto before_retail_open = services.fileio_request_count();
   memory.write32(kResult, 0xBAD0C0DEu);
+  // r15's existing fault log also exposes a DMA descriptor:
+  // source=005CF6C0, destination=001E4000, bytes=00000418 (1048).
+  // Synthetic observation verifies metadata correlation, not the payload.
+  require(services.receive(memory, kFileBuf, 1048u, kCmdDataEe,
+                           0x005CF6C0u),
+          "SIF1 transfer descriptor recorded without inspecting guest bytes");
   require(!file_call(0u, 1048u) &&
+              services.last_rpc_call().fileio_dma_source == 0x005CF6C0u &&
+              services.last_rpc_call().fileio_dma_size == 1048u &&
+              services.last_rpc_call().fileio_dma_exact == 1u &&
               services.last_rpc_call().function == 0u &&
               services.last_rpc_call().send_size == 1048u &&
               services.last_rpc_call().reject_flags == 1024u &&
@@ -384,7 +393,10 @@ int main() {
               services.take_pending_signal_sema() == 0u,
           "unverified retail OPEN ABI rejects without host-file or reply side effects");
 
-  require(!file_call(12u, 4u) && services.fileio_last_function() == 12u,
+  require(!file_call(12u, 4u) && services.fileio_last_function() == 12u &&
+              services.last_rpc_call().fileio_dma_source == 0u &&
+              services.last_rpc_call().fileio_dma_size == 0u &&
+              services.last_rpc_call().fileio_dma_exact == 0u,
           "unsupported FILEIO operations remain explicit fault boundaries");
   // The r11 native Vita trace reached retail libkernl FILEIO 0xFF version
   // negotiation. The generic service must still reject it when no title

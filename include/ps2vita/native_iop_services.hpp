@@ -45,6 +45,12 @@ public:
     std::uint32_t original_packet = 0;
     std::uint32_t sema = 0xFFFFFFFFu;
     std::uint32_t fileio_candidate = 0;
+    // Metadata only: the preceding SIF1 DMA descriptor, not payload bytes.
+    // exact=1 means the transfer size equals the RPC send size. This is
+    // not proof that an unknown retail FILEIO ABI is supported.
+    std::uint32_t fileio_dma_source = 0;
+    std::uint32_t fileio_dma_size = 0;
+    std::uint32_t fileio_dma_exact = 0;
     // Rejection bitmask: 1=client, 2=server, 4=recv size, 8=mode,
     // 16=original packet, 32=semaphore, 64=client pointer,
     // 128=FILEIO operation/args, 256=short packet, 512=wrong phase.
@@ -62,6 +68,8 @@ public:
     file_backend_ = backend;
     bound_fileio_client_ = 0u;
     pending_signal_sema_ = 0u;
+    fileio_dma_source_ = fileio_dma_size_ = 0u;
+    fileio_dma_pending_ = false;
   }
   void boot(Memory& memory);
   // Four-byte FILEIO response. Only set a nonzero value when the IOP
@@ -83,7 +91,8 @@ public:
   // A descriptor was copied into IOP RAM using EE SIF1 DMA semantics.
   // Returns false when a recognized command is malformed or unsupported.
   bool receive(Memory& memory, std::uint32_t destination,
-               std::uint32_t transfer_size, std::uint32_t ee_cmd_data);
+               std::uint32_t transfer_size, std::uint32_t ee_cmd_data,
+               std::uint32_t ee_source = 0u);
 
   Phase phase() const { return phase_; }
   std::uint32_t ee_receive_address() const { return ee_receive_address_; }
@@ -125,6 +134,9 @@ private:
   std::uint32_t fileio_total_read_ = 0;
   std::array<char, 257> fileio_last_path_{};
   RpcCallTrace last_rpc_call_{};
+  std::uint32_t fileio_dma_source_ = 0;
+  std::uint32_t fileio_dma_size_ = 0;
+  bool fileio_dma_pending_ = false;
   Phase phase_ = Phase::Offline;
   std::uint32_t ee_receive_address_ = 0;
   std::uint32_t command_count_ = 0;

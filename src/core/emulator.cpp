@@ -324,7 +324,7 @@ bool Emulator::handle_bare_elf_startup_syscall() {
         memory_.iop_write8(d.dst + j, memory_.read8(d.src + j));
       if (native_iop_enabled_) {
         if (!native_iop_.receive(memory_, d.dst, d.size,
-                                 sif_system_regs_[1])) return false;
+                                  sif_system_regs_[1], d.src)) return false;
         if (native_iop_.phase() == NativeIopServices::Phase::RebootPending)
           native_iop_reboot_ready_at_ = state.cycles + 8192u;
         const auto sema_id = native_iop_.take_pending_signal_sema();

@@ -69,6 +69,8 @@ void NativeIopServices::reset() {
   fileio_last_result_ = 0;
   fileio_last_path_ = {};
   last_rpc_call_ = {};
+  fileio_dma_source_ = fileio_dma_size_ = 0u;
+  fileio_dma_pending_ = false;
   pending_signal_sema_ = 0u;
   bound_cdvd_client_ = 0u;
   reboot_count_ = reboot_mode_ = 0u;
@@ -92,6 +94,8 @@ bool NativeIopServices::complete_reboot(Memory& memory) {
   bound_cdvd_client_ = 0u;
   bound_fileio_client_ = 0u;
   pending_signal_sema_ = 0u;
+  fileio_dma_source_ = fileio_dma_size_ = 0u;
+  fileio_dma_pending_ = false;
   phase_ = Phase::AwaitingInit;
   ++reboot_completed_;
   return true;
@@ -262,11 +266,21 @@ void NativeIopServices::boot(Memory& memory) {
 
 bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
                                 std::uint32_t transfer_size,
-                                std::uint32_t ee_cmd_data) {
+                                std::uint32_t ee_cmd_data,
+                                std::uint32_t ee_source) {
   if (phase_ == Phase::Offline) return false;
   // Other IOP RAM transfers are payloads (including prospective RPC input),
   // not SIFCMD packets; no made-up command handler is invoked for them.
-  if (destination != kReceiveAddress) return true;
+  if (destination != kReceiveAddress) {
+    // Record the SIF1 descriptor for the FILEIO argument DMA, without
+    // reading guest bytes or treating a matching size as ABI verification.
+    if (destination == kFileioServerBuffer && transfer_size != 0u) {
+      fileio_dma_source_ = ee_source;
+      fileio_dma_size_ = transfer_size;
+      fileio_dma_pending_ = true;
+    }
+    return true;
+  }
   if (transfer_size < 16u) return false;
   const auto size_word = memory.iop_read32(kReceiveAddress);
   const auto packet_size = size_word & 0xFFu;
@@ -363,6 +377,12 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
       return true;
     }
   case kRpcCall: {
+    // Consume once: later RPC calls must not inherit a stale DMA descriptor.
+    const auto dma_source = fileio_dma_source_;
+    const auto dma_size = fileio_dma_size_;
+    const auto dma_pending = fileio_dma_pending_;
+    fileio_dma_source_ = fileio_dma_size_ = 0u;
+    fileio_dma_pending_ = false;
     last_rpc_call_ = {};
     last_rpc_call_.packet_size = packet_size;
     last_rpc_call_.bound_fileio_client = bound_fileio_client_;
@@ -395,6 +415,11 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
     if (bound_fileio_client_ != 0u &&
         (client == bound_fileio_client_ || server == kFileioServerHandle)) {
       last_rpc_call_.fileio_candidate = 1u;
+      if (dma_pending) {
+        last_rpc_call_.fileio_dma_source = dma_source;
+        last_rpc_call_.fileio_dma_size = dma_size;
+        last_rpc_call_.fileio_dma_exact = dma_size == send_size ? 1u : 0u;
+      }
       last_rpc_call_.reject_flags =
           (client != bound_fileio_client_ ? 1u : 0u) |
           (server != kFileioServerHandle ? 2u : 0u) |
