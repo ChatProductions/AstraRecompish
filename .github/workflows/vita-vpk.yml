@@ -106,6 +106,17 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
       - name: Compile native Vita VPK
         run: cmake --build build-vita --parallel 2
+      - name: Compile title-specific Vita frontend with synthetic AOT only
+        run: |
+          # This fixture is generated from freely redistributable guest code.
+          # Compile the private-title conditional code path without packaging
+          # or uploading any NFSMW game code, disc data, or firmware.
+          python3 tools/make_smoke_elf.py /tmp/astrarecomp-synthetic-vita.elf
+          cmake -S . -B build-vita-synthetic-aot \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
+            -DASTRART_PRIVATE_VITA_ELF=/tmp/astrarecomp-synthetic-vita.elf
+          cmake --build build-vita-synthetic-aot --parallel 2 --target ps2vita
       - name: Upload installable VPK
         uses: actions/upload-artifact@v4
         with:
