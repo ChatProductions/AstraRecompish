@@ -11,6 +11,24 @@
 #include <memory>
 #include <vector>
 
+// Host replay reports typed RPC metadata rather than reinterpreting legacy
+// Vita log fields. Never print payload bytes or private game file contents.
+void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
+  const auto& rpc = services.last_rpc_call();
+  std::printf("rpc_packet_size=%u\\nrpc_client=%08X\\nrpc_bound_fileio_client=%08X\\n"
+              "rpc_server=%08X\\nrpc_function=%u\\nrpc_send_size=%u\\n"
+              "rpc_recvbuf=%08X\\nrpc_recv_size=%u\\nrpc_mode=%u\\n"
+              "rpc_original_packet=%08X\\nrpc_semaphore=%u\\n"
+              "rpc_fileio_candidate=%u\\nrpc_reject_flags=%u\\n"
+              "fileio_binds=%u\\nfileio_calls=%u\\nfileio_bytes_read=%u\\n",
+              rpc.packet_size, rpc.client, rpc.bound_fileio_client,
+              rpc.server, rpc.function, rpc.send_size, rpc.recvbuf,
+              rpc.recv_size, rpc.mode, rpc.original_packet, rpc.sema,
+              rpc.fileio_candidate, rpc.reject_flags,
+              services.fileio_bind_count(), services.fileio_request_count(),
+              services.fileio_total_read());
+}
+
 int main(int argc, char** argv) {
   if (argc < 2 || argc > 4) {
     std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop]\n");
@@ -119,6 +137,7 @@ int main(int argc, char** argv) {
           emulator->native_iop_services().reboot_count(),
           emulator->native_iop_services().reboot_mode(),
           emulator->native_iop_services().reboot_arg());
+      print_native_rpc_diagnostics(emulator->native_iop_services());
       return 0; // A captured stop is the desired diagnostic outcome.
     }
   }
@@ -131,5 +150,6 @@ int main(int argc, char** argv) {
               static_cast<unsigned long long>(emulator->iop().state().cycles),
               static_cast<unsigned>(emulator->native_iop_services().phase()),
               emulator->native_iop_services().command_count());
+  print_native_rpc_diagnostics(emulator->native_iop_services());
   return 0;
 }
