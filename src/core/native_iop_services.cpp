@@ -122,12 +122,13 @@ bool NativeIopServices::execute_fileio(
   std::int32_t answer = -38; // ENOSYS; not a fabricated successful reply.
   switch (function) {
   case 0xFFu: {
-    // Retail SDK 2.x sceFsInit sends an RPC version query (typically four
-    // request bytes and four reply bytes). A title-specific native HLE may
+    // Retail SDK 2.x sceFsInit sends an RPC version query. Decompilations
+    // show four request bytes, but NFSMW r14 hardware captures exactly eight
+    // request bytes and eight reply bytes. A title-specific native HLE may
     // advertise the loaded ELF's four-character libkernl compatibility tag.
     // Without a configured ABI version we must not invent IOP module data.
     if (fileio_compatibility_version_ == 0u ||
-        (send_size != 0u && send_size != 4u)) return false;
+        (send_size != 0u && send_size != 4u && send_size != 8u)) return false;
     answer = static_cast<std::int32_t>(fileio_compatibility_version_);
     break;
   }

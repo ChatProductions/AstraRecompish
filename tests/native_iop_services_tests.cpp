@@ -381,11 +381,14 @@ int main() {
               services.take_pending_signal_sema() == 14u,
           "retail sceFsInit version RPC completes with title's ABI tag");
   memory.write32(kResult + 4u, 0xC0FFEE02u);
-  require(file_call(0xFFu, 0u, 1u, 8u) &&
+  require(file_call(0xFFu, 8u, 1u, 8u) &&
               memory.read32(kResult) == kNfsmwLibkernl2800 &&
               memory.read32(kResult + 4u) == 0u &&
+              services.last_rpc_call().send_size == 8u &&
+              services.last_rpc_call().recv_size == 8u &&
+              services.last_rpc_call().reject_flags == 0u &&
               services.take_pending_signal_sema() == 14u,
-          "retail version RPC accepts the observed eight-byte reply envelope");
+          "r14 Vita RPC with eight-byte request and reply negotiates version");
 
   services.reset();
   require(services.fileio_request_count() == 0u && files.closes == 1,
