@@ -363,6 +363,27 @@ int main() {
               static_cast<std::int32_t>(memory.read32(kResult)) == -9,
           "FILEIO rejects already-closed guest descriptors");
   services.take_pending_signal_sema();
+  // r15 hardware reported fno=0, send_size=1048, recv_size=4, mode=1,
+  // semaphore=15, and reject_flags=128. The 1048-byte retail payload is
+  // not captured, so it cannot be treated as PS2SDK's 272-byte OPEN ABI.
+  // Supply a deliberately valid *synthetic* 272-byte prefix to prove the
+  // unknown larger envelope cannot accidentally open a real host file.
+  memory.iop_write32(kFileBuf, 1u);
+  for (unsigned i = 0; i < sizeof(kName); ++i)
+    memory.iop_write8(kFileBuf + 4u + i,
+                      static_cast<std::uint8_t>(kName[i]));
+  const auto before_retail_open = services.fileio_request_count();
+  memory.write32(kResult, 0xBAD0C0DEu);
+  require(!file_call(0u, 1048u) &&
+              services.last_rpc_call().function == 0u &&
+              services.last_rpc_call().send_size == 1048u &&
+              services.last_rpc_call().reject_flags == 1024u &&
+              services.fileio_request_count() == before_retail_open + 1u &&
+              files.opens == 1 && files.closes == 1 &&
+              memory.read32(kResult) == 0xBAD0C0DEu &&
+              services.take_pending_signal_sema() == 0u,
+          "unverified retail OPEN ABI rejects without host-file or reply side effects");
+
   require(!file_call(12u, 4u) && services.fileio_last_function() == 12u,
           "unsupported FILEIO operations remain explicit fault boundaries");
   // The r11 native Vita trace reached retail libkernl FILEIO 0xFF version
