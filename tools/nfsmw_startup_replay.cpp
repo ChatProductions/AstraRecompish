@@ -27,6 +27,9 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
               "rpc_fileio_candidate=%u\nrpc_reject_flags=%u\n"
               "rpc_fileio_dma_source=%08X\nrpc_fileio_dma_size=%u\n"
               "rpc_fileio_dma_exact=%u\n"
+              "rpc_fileio_open_pathlike_count=%u\n"
+              "rpc_fileio_open_first_pathlike_offset=%u\n"
+              "rpc_fileio_open_first_pathlike_length=%u\n"
               "fileio_binds=%u\nfileio_calls=%u\nfileio_bytes_read=%u\n",
               rpc.packet_size, rpc.client, rpc.bound_fileio_client,
               rpc.server, rpc.function, rpc.send_size, rpc.recvbuf,
@@ -34,6 +37,9 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
               rpc.fileio_candidate, rpc.reject_flags,
               rpc.fileio_dma_source, rpc.fileio_dma_size,
               rpc.fileio_dma_exact,
+              rpc.fileio_open_pathlike_count,
+              rpc.fileio_open_first_pathlike_offset,
+              rpc.fileio_open_first_pathlike_length,
               services.fileio_bind_count(), services.fileio_request_count(),
               services.fileio_total_read());
 }
