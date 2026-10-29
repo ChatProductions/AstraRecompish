@@ -385,30 +385,30 @@ int main() {
               services.take_pending_signal_sema() == 0u,
           "unconfigured FILEIO 0xFF rejects without reply or file side effects");
 
-  // NFSMW's real ELF carries the tag PsIIlibkernl2800, i.e. four version
-  // bytes '2','8','0','0'. Retail sceFsInit consumes a four-byte RPC answer.
-  constexpr std::uint32_t kNfsmwLibkernl2800 = 0x30303832u;
-  services.set_fileio_compatibility_version(kNfsmwLibkernl2800);
+  // An explicitly supplied synthetic version exercises response mechanics.
+  // The EE's libkernl tag alone is not evidence that IOP FILEIO returns it.
+  constexpr std::uint32_t kSyntheticLibkernl2800 = 0x30303832u;
+  services.set_fileio_compatibility_version(kSyntheticLibkernl2800);
   memory.iop_write32(kFileBuf, 0x12345678u); // version send buffer is opaque
   require(!file_call(0xFFu, 5u, 0u, 4u) &&
               services.last_rpc_call().reject_flags == 128u &&
               memory.read32(kResult) == 0xC0FFEE01u,
           "malformed version RPC must not write a compatibility response");
   require(file_call(0xFFu, 4u, 0u, 4u) &&
-              memory.read32(kResult) == kNfsmwLibkernl2800 &&
+              memory.read32(kResult) == kSyntheticLibkernl2800 &&
               services.last_rpc_call().reject_flags == 0u &&
               services.fileio_last_function() == 0xFFu &&
               services.fileio_last_result() ==
-                  static_cast<std::int32_t>(kNfsmwLibkernl2800) &&
+                  static_cast<std::int32_t>(kSyntheticLibkernl2800) &&
               files.opens == before_open && files.closes == before_close &&
               services.take_pending_signal_sema() == 14u,
-          "retail sceFsInit version RPC completes with title's ABI tag");
+          "explicit synthetic FILEIO 0xFF response completes only when configured");
   memory.write32(kResult + 4u, 0xC0FFEE02u);
   require(file_call(0xFFu, 0u, 1u, 8u) &&
-              memory.read32(kResult) == kNfsmwLibkernl2800 &&
+              memory.read32(kResult) == kSyntheticLibkernl2800 &&
               memory.read32(kResult + 4u) == 0u &&
               services.take_pending_signal_sema() == 14u,
-          "retail version RPC accepts the observed eight-byte reply envelope");
+          "explicit synthetic version RPC accepts the observed eight-byte reply envelope");
 
   services.reset();
   require(services.fileio_request_count() == 0u && files.closes == 1,

@@ -122,10 +122,10 @@ bool NativeIopServices::execute_fileio(
   std::int32_t answer = -38; // ENOSYS; not a fabricated successful reply.
   switch (function) {
   case 0xFFu: {
-    // Retail SDK 2.x sceFsInit sends an RPC version query (typically four
-    // request bytes and four reply bytes). A title-specific native HLE may
-    // advertise the loaded ELF's four-character libkernl compatibility tag.
-    // Without a configured ABI version we must not invent IOP module data.
+    // sceFsInit requests the IOP FILEIO version using fno 0xFF.
+    // A nonzero reply is permitted only after independent IOP-side protocol
+    // verification. The EE executable's expected libkernl tag is NOT that
+    // verification. Without a configured response, fail closed.
     if (fileio_compatibility_version_ == 0u ||
         (send_size != 0u && send_size != 4u)) return false;
     answer = static_cast<std::int32_t>(fileio_compatibility_version_);

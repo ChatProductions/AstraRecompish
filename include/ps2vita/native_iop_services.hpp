@@ -64,8 +64,10 @@ public:
     pending_signal_sema_ = 0u;
   }
   void boot(Memory& memory);
-  // Four-byte libkernl/FILEIO ABI token, supplied explicitly by the loaded
-  // title's SDK tag. Zero disables version negotiation for generic ELFs.
+  // Four-byte FILEIO response. Only set a nonzero value when the IOP
+  // module's response and EE comparison protocol are independently verified.
+  // An EE libkernl tag alone does not establish the IOP's reply.
+  // Zero rejects 0xFF rather than inventing a firmware response.
   void set_fileio_compatibility_version(std::uint32_t version) {
     fileio_compatibility_version_ = version;
   }

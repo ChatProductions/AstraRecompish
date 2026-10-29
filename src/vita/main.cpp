@@ -30,7 +30,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-native-fileio-ver-r14";
+constexpr const char* kBuildId = "nfsmw-aot-native-fileio-audit";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -643,8 +643,12 @@ int main() {
           const bool usable_ioprp = g_ioprp_summary.valid &&
                                    g_ioprp_summary.has_sifcmd &&
                                    g_ioprp_summary.has_cdvd;
-          const auto fileio_version = elf_fileio_compatibility_version(image);
-          emulator.set_native_fileio_compatibility_version(fileio_version);
+          const auto ee_fileio_tag = elf_fileio_compatibility_version(image);
+          // The EE tag is its expected SDK version, not a verified reply
+          // from the external IOPRP FILEIO module. The module metadata and
+          // the EE-side comparison protocol must be established first.
+          // Fail closed instead of echoing an unsupported version response.
+          emulator.set_native_fileio_compatibility_version(0u);
           emulator.enable_native_iop_services(true);
           emulator.enable_verified_ioprp_reboot(usable_ioprp);
           const bool enabled = emulator.cpu().set_startup_aot_package(
@@ -652,12 +656,13 @@ int main() {
           char probe[512];
           std::snprintf(probe, sizeof(probe),
               "build=%s\nprivate title AOT %s\n"
-              "bios_iop=0\nnative_iop=1\nfileio_sdk=%08X\n"
+              "bios_iop=0\nnative_iop=1\nfileio_ee_sdk=%08X\n"
+              "fileio_version_reply_armed=0\n"
               "ioprp=%s\npath=%s\nentries=%u\n"
               "bootconf=%u\nsifcmd=%u\ncdvd=%u\n"
               "padding_missing=%u\n",
               kBuildId, enabled ? "armed" : "validation failed",
-              fileio_version,
+              ee_fileio_tag,
               usable_ioprp ? "ROMDIR validated" :
               g_ioprp_summary.valid ? "required SIFCMD/CDVD module missing" :
               g_ioprp_summary.error,
