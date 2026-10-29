@@ -109,7 +109,7 @@ public:
     const auto index = handle - 1;
     if (index < 0 || static_cast<std::size_t>(index) >= files_.size() ||
         !files_[index]) return -9;
-    if (size && !buffer) return -22;
+    if (size > 1024u * 1024u || (size && !buffer)) return -22;
     if (!size) return 0;
     const auto count = std::fread(buffer, 1u, size, files_[index]);
     if (std::ferror(files_[index])) return -5;

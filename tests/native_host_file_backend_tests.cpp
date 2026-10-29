@@ -62,19 +62,31 @@ int main() {
   require(backend.seek(fd, 0, 3u) == -22, "invalid whence rejected");
   require(backend.close(fd) == 0, "close");
   require(backend.read(fd, buf.data(), 1u) == -9, "closed descriptor rejected");
+  require(backend.read(-1, buf.data(), 1u) == -9, "invalid descriptor rejected");
+  const int cap_fd = backend.open("host:NFS\\TEST.BIN", 1u);
+  require(cap_fd > 0 && backend.read(cap_fd, buf.data(), 1024u * 1024u + 1u) == -22,
+          "oversized backend read rejected before buffer access");
+  require(backend.close(cap_fd) == 0, "close after oversized request");
   const int disc = backend.open("cdrom0:\\LEVEL.DAT;1", 1u);
   require(disc > 0 && backend.read(disc, buf.data(), 4u) == 4 &&
           buf[0] == 'd' && buf[3] == 'c', "ISO revision and disc root");
   require(backend.close(disc) == 0, "close disc");
 
-  // Canonical-path containment prevents a symlink from escaping the
-  // explicitly supplied directory. Skip only when symlinks are unavailable.
+  // Verify containment against an existing, readable file outside the
+  // authorized root; a missing target would not exercise the escape check.
+  const auto outside = fs::path(root.string() + "-outside");
+  fs::create_directories(outside);
+  {
+    std::ofstream out(outside / "SECRET.BIN", std::ios::binary);
+    out.write("secret", 6);
+  }
   std::error_code ec;
-  fs::create_symlink(fs::temp_directory_path(), root / "NFS" / "ESCAPE", ec);
+  fs::create_directory_symlink(outside, root / "NFS" / "ESCAPE", ec);
   if (!ec)
-    require(backend.open("host:NFS\\ESCAPE\\outside.bin", 1u) < 0,
-            "symlink escape rejected");
+    require(backend.open("host:NFS\\ESCAPE\\SECRET.BIN", 1u) == -13,
+            "existing external file blocked through symlink escape");
   cleanup();
+  fs::remove_all(outside, ec);
   std::puts("host FILEIO backend: all synthetic-file checks passed");
   return 0;
 }
