@@ -67,9 +67,8 @@ void NativeIopServices::reset() {
   fileio_bind_count_ = fileio_request_count_ = fileio_total_read_ = 0u;
   fileio_last_function_ = 0xFFFFFFFFu;
   fileio_last_result_ = 0;
-  // An IOP FILEIO version response is module/session-specific. Never retain
-  // a test-configured token across a reset or a different title session.
-  fileio_compatibility_version_ = 0u;
+  // A same-title runtime reset preserves its explicitly configured ABI;
+  // loading a different ELF clears the version at the Emulator boundary.
   fileio_last_path_ = {};
   last_rpc_call_ = {};
   fileio_dma_source_ = fileio_dma_size_ = 0u;
