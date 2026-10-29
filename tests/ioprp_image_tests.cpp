@@ -36,6 +36,48 @@ int main() {
               result.modules[5].size == 16u,
           "ROMDIR parser validates and locates known IOP service modules");
 
+  // The actual IOPRP from a Vita run was an odd number of bytes. A final
+  // module's data may reach EOF without containing its 16-byte padding.
+  // This cannot be permitted for modules with a successor.
+  entry(image, 5u, "CDVDFSV", 15u);
+  image.resize(0xAFu);
+  const auto unpadded = ps2vita::inspect_ioprp_image(image.data(), image.size());
+  require(unpadded.valid && unpadded.entries == 6u &&
+              unpadded.final_payload_end == 0xAFu &&
+              unpadded.final_missing_padding == 1u &&
+              unpadded.trailing_bytes == 0u,
+          "final unpadded payload should remain valid when all bytes exist");
+
+  // A truncated byte of actual data is corruption, not missing padding.
+  entry(image, 5u, "CDVDFSV", 16u);
+  const auto truncated = ps2vita::inspect_ioprp_image(image.data(), image.size());
+  require(!truncated.valid && truncated.failed_entry_index == 5u &&
+              truncated.failed_actual_end == 0xB0u,
+          "truncation inside a final payload must be rejected");
+  image.resize(0xB0u, 0u);
+
+  // IOPBTCONF isn't an essential directory entry in every valid ROMDIR.
+  // Validation reports that absence; HLE services have separate requirements.
+  image[3u * 16u + 3u] = 'X';
+  const auto no_bootconf =
+      ps2vita::inspect_ioprp_image(image.data(), image.size());
+  require(no_bootconf.valid && !no_bootconf.has_bootconf &&
+              no_bootconf.has_sifcmd && no_bootconf.has_cdvd,
+          "valid ROMDIR without IOPBTCONF is reported accurately");
+  image[3u * 16u + 3u] = 'B';
+
+  image.resize(0xAFu);
+  entry(image, 4u, "SIFCMD", 29u);
+  const auto missing_middle_padding =
+      ps2vita::inspect_ioprp_image(image.data(), image.size());
+  require(!missing_middle_padding.valid &&
+              missing_middle_padding.failed_entry_index == 4u &&
+              missing_middle_padding.failed_actual_end == 0xADu &&
+              missing_middle_padding.failed_aligned_end == 0xB0u,
+          "non-final payload cannot borrow a final-entry padding exception");
+  image.resize(0xB0u, 0u);
+  entry(image, 4u, "SIFCMD", 16u);
+
   entry(image, 1u, "ROMDIR", 16u);
   require(!ps2vita::inspect_ioprp_image(image.data(), image.size()).valid,
           "undersized directory cannot masquerade as a valid IOPRP");

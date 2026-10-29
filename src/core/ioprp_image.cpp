@@ -27,11 +27,14 @@ IoprpSummary inspect_ioprp_image(const void* image, std::size_t length) {
   }
   result.image_size = static_cast<std::uint32_t>(length);
   const auto* bytes = static_cast<const std::uint8_t*>(image);
-  std::uint64_t module_offset = 0u;
+  // First read the entire directory, including its terminator. Knowing which
+  // entry is truly last lets us accept images with an unpadded final payload
+  // without weakening bounds checks on any earlier module.
   bool terminated = false;
   for (std::size_t i = 0; i < result.modules.size(); ++i) {
     const std::size_t base = i * kRomdirEntrySize;
     if (base + kRomdirEntrySize > length) {
+      result.failed_entry_index = static_cast<std::uint32_t>(i);
       result.error = "ROMDIR has no terminating entry";
       return result;
     }
@@ -44,21 +47,12 @@ IoprpSummary inspect_ioprp_image(const void* image, std::size_t length) {
       if (ch == 0u) break;
       if ((ch < '0' || ch > '9') && (ch < 'A' || ch > 'Z') &&
           ch != '_' && ch != '-') {
+        result.failed_entry_index = static_cast<std::uint32_t>(i);
         result.error = "ROMDIR has invalid module name";
         return result;
       }
     }
     entry.size = word32(bytes, base + 12u);
-    if (module_offset > length || entry.size > length - module_offset) {
-      result.error = "ROMDIR entry exceeds file bounds";
-      return result;
-    }
-    entry.offset = static_cast<std::uint32_t>(module_offset);
-    module_offset += (std::uint64_t{entry.size} + 15u) & ~std::uint64_t{15u};
-    if (module_offset > length) {
-      result.error = "ROMDIR aligned entry exceeds file bounds";
-      return result;
-    }
     ++result.entries;
     if (same(entry, "IOPBTCONF")) result.has_bootconf = true;
     if (same(entry, "SIFCMD")) result.has_sifcmd = true;
@@ -72,10 +66,44 @@ IoprpSummary inspect_ioprp_image(const void* image, std::size_t length) {
     return result;
   }
   const auto directory_bytes = (result.entries + 1u) * kRomdirEntrySize;
-  if (result.modules[1].offset != 0u ||
+  if (result.modules[0].size != 0u ||
       result.modules[1].size < directory_bytes) {
     result.error = "ROMDIR length does not cover directory";
     return result;
+  }
+
+  std::uint64_t module_offset = 0u;
+  for (std::size_t i = 0; i < result.entries; ++i) {
+    auto& entry = result.modules[i];
+    entry.offset = static_cast<std::uint32_t>(module_offset);
+    const auto actual_end = module_offset + entry.size;
+    const auto aligned_end = (actual_end + 15u) & ~std::uint64_t{15u};
+    if (actual_end > length) {
+      result.failed_entry_index = static_cast<std::uint32_t>(i);
+      result.failed_actual_end = static_cast<std::uint32_t>(actual_end);
+      result.failed_aligned_end = static_cast<std::uint32_t>(aligned_end);
+      result.error = "ROMDIR entry exceeds file bounds";
+      return result;
+    }
+    if (aligned_end > length) {
+      // Only the final module may omit up to 15 bytes of 16-byte padding.
+      // The payload itself must still be completely inside the file.
+      if (i + 1u != result.entries) {
+        result.failed_entry_index = static_cast<std::uint32_t>(i);
+        result.failed_actual_end = static_cast<std::uint32_t>(actual_end);
+        result.failed_aligned_end = static_cast<std::uint32_t>(aligned_end);
+        result.error = "ROMDIR non-final aligned entry exceeds file bounds";
+        return result;
+      }
+      result.final_missing_padding =
+          static_cast<std::uint32_t>(aligned_end - length);
+    }
+    module_offset = aligned_end;
+    if (i + 1u == result.entries) {
+      result.final_payload_end = static_cast<std::uint32_t>(actual_end);
+      result.trailing_bytes =
+          static_cast<std::uint32_t>(length - actual_end);
+    }
   }
   result.valid = true;
   result.error = "ok";

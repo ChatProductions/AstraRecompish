@@ -47,6 +47,10 @@ struct CpuState {
   // Profile-guided AOT telemetry. These do not affect architectural state.
   std::uint64_t aot_trace_entries = 0;
   std::uint64_t aot_trace_horizon_fallbacks = 0;
+  // Unlike trace-only telemetry, these record the actual private-title AOT
+  // function dispatcher. Useful when a test reports zero trace entries.
+  std::uint64_t aot_function_calls = 0;
+  std::uint64_t aot_function_instructions = 0;
 };
 
 class Cpu {
@@ -82,12 +86,16 @@ public:
     const auto fast = state_.fast_path_instructions;
     const auto traces = state_.aot_trace_entries;
     const auto fallbacks = state_.aot_trace_horizon_fallbacks;
+    const auto function_calls = state_.aot_function_calls;
+    const auto function_instructions = state_.aot_function_instructions;
     state_ = context.state;
     state_.cycles = cycles;
     state_.cop0[9] = count;
     state_.fast_path_instructions = fast;
     state_.aot_trace_entries = traces;
     state_.aot_trace_horizon_fallbacks = fallbacks;
+    state_.aot_function_calls = function_calls;
+    state_.aot_function_instructions = function_instructions;
     branch_pending_ = context.branch_pending;
     pending_target_ = context.pending_target;
     stop_reason_ = StopReason::None;

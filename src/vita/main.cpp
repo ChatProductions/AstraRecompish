@@ -29,7 +29,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-20261029-native-iop-r5";
+constexpr const char* kBuildId = "nfsmw-aot-20261029-romdir-r6";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -43,11 +43,18 @@ const char* g_ioprp_path = "not found";
 
 void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
   const auto& iop = emulator.native_iop_services();
-  char report[768];
+  const auto failed = g_ioprp_summary.failed_entry_index;
+  const auto* failed_name = failed < g_ioprp_summary.entries
+      ? g_ioprp_summary.modules[failed].name.data() : "none";
+  char report[1024];
   std::snprintf(report, sizeof(report),
       "ioprp_path=%s\nioprp_valid=%u\nioprp_size=%u\n"
       "ioprp_entries=%u\nioprp_bootconf=%u\nioprp_sifcmd=%u\n"
       "ioprp_cdvd=%u\nioprp_error=%s\n"
+      "ioprp_failed_index=%u\nioprp_failed_name=%s\n"
+      "ioprp_failed_end=%u\nioprp_failed_aligned_end=%u\n"
+      "ioprp_final_payload_end=%u\nioprp_padding_missing=%u\n"
+      "ioprp_trailing_bytes=%u\n"
       "native_iop_phase=%u\nnative_iop_packets=%u\n"
       "native_iop_unknown_cid=%08X\nnative_iop_unknown_sid=%08X\n"
       "native_cdvd_init_calls=%u\nnative_iop_reboot_requests=%u\n"
@@ -59,11 +66,27 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
       g_ioprp_summary.has_sifcmd ? 1u : 0u,
       g_ioprp_summary.has_cdvd ? 1u : 0u,
       g_ioprp_summary.error,
+      failed, failed_name, g_ioprp_summary.failed_actual_end,
+      g_ioprp_summary.failed_aligned_end,
+      g_ioprp_summary.final_payload_end,
+      g_ioprp_summary.final_missing_padding,
+      g_ioprp_summary.trailing_bytes,
       static_cast<unsigned>(iop.phase()), iop.command_count(),
       iop.unsupported_cid(), iop.unsupported_rpc_sid(),
       iop.cdvd_init_calls(), iop.reboot_count(), iop.reboot_completed(),
       iop.reboot_mode(), iop.reboot_arg());
   sceIoWrite(fd, report, std::strlen(report));
+  // Metadata only: no game code, bytes, or file contents leave the Vita.
+  // Full per-entry details pinpoint problems that could otherwise require
+  // another build just to locate a malformed file boundary.
+  for (std::uint32_t n = 0u; n < g_ioprp_summary.entries; ++n) {
+    const auto& entry = g_ioprp_summary.modules[n];
+    char line[112];
+    std::snprintf(line, sizeof(line),
+        "ioprp_romdir_%02u=%s,offset=%u,size=%u\n",
+        n, entry.name.data(), entry.offset, entry.size);
+    sceIoWrite(fd, line, std::strlen(line));
+  }
 }
 
 std::uint64_t benchmark_clock_microseconds() {
@@ -152,6 +175,12 @@ void write_fault(const ps2vita::Emulator& emulator, ps2vita::StopReason reason) 
   const int fd = sceIoOpen(kFaultPath, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
   if (fd < 0) return;
   sceIoWrite(fd, report, std::strlen(report));
+  char aot[192];
+  std::snprintf(aot, sizeof(aot),
+      "aot_function_calls=%llu\naot_function_instructions=%llu\n",
+      static_cast<unsigned long long>(state.aot_function_calls),
+      static_cast<unsigned long long>(state.aot_function_instructions));
+  sceIoWrite(fd, aot, std::strlen(aot));
   write_deci2_diagnostic(fd, emulator);
   write_iop_diagnostic(fd, emulator);
   sceIoClose(fd);
@@ -164,6 +193,7 @@ void write_progress(const ps2vita::Emulator& emulator) {
   std::snprintf(report, sizeof(report),
       "pc=%08X\nopcode=%08X\ncycles=%llu\nfast_path_instructions=%llu\n"
       "aot_trace_entries=%llu\naot_trace_horizon_fallbacks=%llu\n"
+      "aot_function_calls=%llu\naot_function_instructions=%llu\n"
       "v0=%016llX\na0=%016llX\na1=%016llX\na2=%016llX\n"
       "sp=%016llX\nra=%016llX\n"
       "status=%08X\ncause=%08X\nepc=%08X\nbadvaddr=%08X\n",
@@ -171,6 +201,8 @@ void write_progress(const ps2vita::Emulator& emulator) {
       static_cast<unsigned long long>(state.fast_path_instructions),
       static_cast<unsigned long long>(state.aot_trace_entries),
       static_cast<unsigned long long>(state.aot_trace_horizon_fallbacks),
+      static_cast<unsigned long long>(state.aot_function_calls),
+      static_cast<unsigned long long>(state.aot_function_instructions),
       static_cast<unsigned long long>(state.gpr[2]),
       static_cast<unsigned long long>(state.gpr[4]),
       static_cast<unsigned long long>(state.gpr[5]),
@@ -492,18 +524,30 @@ int main() {
         if (result.ok && loaded_external) {
           inspect_external_ioprp();
           emulator.enable_native_iop_services(true);
+          // IOPBTCONF is common but not mandatory for every IOPRP layout.
+          // Require a complete ROMDIR payload and the two native IOP service
+          // families actually needed by this experimental reboot path.
           const bool usable_ioprp = g_ioprp_summary.valid &&
-                                   g_ioprp_summary.has_bootconf;
+                                   g_ioprp_summary.has_sifcmd &&
+                                   g_ioprp_summary.has_cdvd;
           emulator.enable_verified_ioprp_reboot(usable_ioprp);
           const bool enabled = emulator.cpu().set_startup_aot_package(
               &ps2vita::generated_private_game_aot_package());
           char probe[512];
           std::snprintf(probe, sizeof(probe),
               "build=%s\nprivate title AOT %s\n"
-              "native_iop=enabled\nioprp=%s\npath=%s\nentries=%u\n",
+              "native_iop=enabled\nioprp=%s\npath=%s\nentries=%u\n"
+              "bootconf=%u\nsifcmd=%u\ncdvd=%u\n"
+              "padding_missing=%u\n",
               kBuildId, enabled ? "armed" : "validation failed",
-              usable_ioprp ? "ROMDIR validated" : g_ioprp_summary.error,
-              g_ioprp_path, g_ioprp_summary.entries);
+              usable_ioprp ? "ROMDIR validated" :
+              g_ioprp_summary.valid ? "required SIFCMD/CDVD module missing" :
+              g_ioprp_summary.error,
+              g_ioprp_path, g_ioprp_summary.entries,
+              g_ioprp_summary.has_bootconf ? 1u : 0u,
+              g_ioprp_summary.has_sifcmd ? 1u : 0u,
+              g_ioprp_summary.has_cdvd ? 1u : 0u,
+              g_ioprp_summary.final_missing_padding);
           write_probe(probe);
         }
 #endif

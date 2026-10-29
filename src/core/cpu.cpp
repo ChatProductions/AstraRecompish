@@ -273,6 +273,8 @@ StopReason Cpu::run(std::uint32_t instruction_budget) {
             maximum <= memory_.cycles_until_next_event()) {
           const auto exit = execute_aot(*startup_aot_package_, memory_, state_);
           if (exit.instructions != 0u) {
+            ++state_.aot_function_calls;
+            state_.aot_function_instructions += exit.instructions;
             i += exit.instructions;
             if (exit.kind == AotExitKind::Stop)
               return stop_reason_ = exit.reason;

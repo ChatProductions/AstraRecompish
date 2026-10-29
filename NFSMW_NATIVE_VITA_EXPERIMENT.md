@@ -6,6 +6,26 @@ files, or any saves. Private title-specific test VPKs are distributed through
 VitaTunnel-Relay; `ux0:data/ps2vita/boot.elf` is supplied independently and
 is **never** included inside these VPKs.
 
+## VitaTunnel r6: full ROMDIR validation, restart gating, AOT counters
+
+The r5 physical-Vita logs verified that the existing image was found at
+`ux0:data/ps2vita/NFS/IOPRP280.IMG` (269,889 bytes). The parser listed 18
+modules, including SIFCMD and CDVD, but stopped with
+`ROMDIR aligned entry exceeds file bounds` before the native reboot.
+
+r6 first reads the terminated directory, then validates every module payload.
+Non-final modules still require aligned bounds, but the last module may have
+up to 15 bytes of padding omitted *after its real data*. The diagnostics now
+record every entry's name/offset/size and the failed entry and bounds; this
+will distinguish a genuine malformed image from an unpadded final module.
+The optional IOPBTCONF entry is reported, but reboot eligibility is based on
+a complete, valid ROMDIR containing SIFCMD and CDVD service modules.
+Both progress and fault logs now record actual title AOT function calls and
+guest instructions, separately from trace-only AOT counters.
+
+This is still a bounded HLE restart, not execution of proprietary IOP
+modules. Hardware behavior beyond the r5 observed reset is unverified.
+
 ## VitaTunnel r5: external IOPRP image validation and bounded HLE reboot
 
 An updated title-specific VPK (`NFMRA0001`) now incorporates the native IOP
@@ -26,7 +46,7 @@ resolved Vita path, module counts, SIFCMD/CDVD module names and the IOP reset
 command appear in the ordinary VitaTunnel-uploaded text logs. An absent or
 malformed image does not cause a false reboot success.
 
-With a valid ROMDIR and `IOPBTCONF`, a request for the observed IOPRP reboot
+With a valid ROMDIR and the required SIFCMD/CDVD service modules, a request for the observed IOPRP reboot
 starts a **bounded native IOP service restart** after a guest-cycle delay.
 This does not execute the proprietary IOP IRX modules. It reinstalls only the
 services currently implemented in native C++, with any unknown SIF/RPC call

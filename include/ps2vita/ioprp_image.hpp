@@ -19,6 +19,14 @@ struct IoprpSummary {
   const char* error = "not inspected";
   std::uint32_t image_size = 0;
   std::uint32_t entries = 0;
+  // Failure details survive incomplete validation so hardware logs can
+  // distinguish a damaged module from a legitimately unpadded final file.
+  std::uint32_t failed_entry_index = 0xFFFFFFFFu;
+  std::uint32_t failed_actual_end = 0;
+  std::uint32_t failed_aligned_end = 0;
+  std::uint32_t final_payload_end = 0;
+  std::uint32_t final_missing_padding = 0;
+  std::uint32_t trailing_bytes = 0;
   bool has_bootconf = false;
   bool has_sifcmd = false;
   bool has_cdvd = false;
