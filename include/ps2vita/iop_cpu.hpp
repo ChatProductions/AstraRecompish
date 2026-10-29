@@ -41,7 +41,8 @@ private:
   void raise_exception(std::uint32_t code, std::uint32_t pc, bool delay_slot);
   bool execute(std::uint32_t instruction, std::uint32_t pc,
                bool& schedules_branch, std::uint32_t& branch_target,
-               bool& skips_delay_slot, std::uint32_t& exception_code);
+               bool& skips_delay_slot, std::uint32_t& exception_code,
+               std::uint32_t merge_load_value);
 
   Memory& memory_;
   IopState state_{};
