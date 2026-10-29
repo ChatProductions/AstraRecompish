@@ -51,6 +51,12 @@ public:
     std::uint32_t fileio_dma_source = 0;
     std::uint32_t fileio_dma_size = 0;
     std::uint32_t fileio_dma_exact = 0;
+    // Read-only structural observations of an *unverified* 1048-byte OPEN
+    // envelope. These are offsets/lengths, never guest path bytes, hashes,
+    // flags, or proof of a supported ABI. 0xFFFFFFFF means no candidate.
+    std::uint32_t fileio_open_pathlike_count = 0;
+    std::uint32_t fileio_open_first_pathlike_offset = 0xFFFFFFFFu;
+    std::uint32_t fileio_open_first_pathlike_length = 0;
     // Rejection bitmask: 1=client, 2=server, 4=recv size, 8=mode,
     // 16=original packet, 32=semaphore, 64=client pointer,
     // 128=FILEIO operation/args, 256=short packet, 512=wrong phase.
