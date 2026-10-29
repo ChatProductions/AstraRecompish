@@ -577,8 +577,8 @@ int main() {
 
   services.reset();
   require(services.fileio_request_count() == 0u && files.closes == 1 &&
-              services.fileio_compatibility_version() == 0u,
-          "service reset clears FILEIO diagnostics and version without double-closing");
+              services.fileio_compatibility_version() == kSyntheticLibkernl2800,
+          "same-title service reset preserves configured ABI without double-closing");
   std::puts("Native IOP service handshake tests passed.");
   return 0;
 }
