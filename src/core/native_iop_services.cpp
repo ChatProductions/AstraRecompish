@@ -131,8 +131,12 @@ bool NativeIopServices::execute_fileio(
     answer = static_cast<std::int32_t>(fileio_compatibility_version_);
     break;
   }
-  case 0u: { // _fio_open_arg: flags (u32) + path[256].
-    if (send_size < 260u) return false;
+  case 0u: { // PS2SDK _fio_open_arg: flags (u32) + path[256].
+    // Its 16-byte alignment makes the RPC send size exactly 272 bytes.
+    // The r15 retail trace uses 1048 bytes for fno 0. Its layout has not
+    // been established; never reinterpret an unknown retail request as the
+    // smaller PS2SDK structure or fabricate a successful file open.
+    if (send_size != 272u) return false;
     const auto flags = memory.iop_read32(kFileioServerBuffer);
     std::array<char, 257> path{};
     bool terminated = false;
@@ -415,6 +419,11 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
           sema == 0u || sema > 64u ||
           !execute_fileio(memory, rpc_number, send_size,
                           recvbuf, recv_size)) {
+        // Distinguish the unverified r15 1048-byte retail OPEN ABI from a
+        // generic operation failure. This bit diagnoses only the envelope;
+        // it is not evidence about the unobserved send-buffer contents.
+        if (rpc_number == 0u && send_size != 272u)
+          last_rpc_call_.reject_flags |= 1024u;
         if (last_rpc_call_.reject_flags == 0u)
           last_rpc_call_.reject_flags = 128u;
         unsupported_cid_ = cid;
