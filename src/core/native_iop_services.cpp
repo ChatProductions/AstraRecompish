@@ -419,7 +419,10 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
       // printable, NUL-terminated run containing a path separator or colon
       // is merely a candidate; do not decode flags or execute the request.
       // No private strings, byte hashes, or raw guest bytes leave the core.
+      // Only scan a payload paired with a fresh, exact-size SIF1 DMA.
+      // Otherwise stale IOP RAM could be misreported as this RPC's data.
       if (rpc_number == 0u && send_size == 1048u &&
+          dma_pending && dma_size == send_size &&
           memory.iop_valid(kFileioServerBuffer, send_size)) {
         for (std::uint32_t offset = 0; offset < send_size;) {
           const auto first = offset;
