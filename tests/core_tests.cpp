@@ -1249,6 +1249,24 @@ void test_iop_memory_and_cpu() {
   iop.run(3);
   check(iop.state().gpr[9] == 10u && iop.state().gpr[10] == 43u,
         "IOP models the R3000A one-instruction load delay");
+
+  // R3000A LWL/LWR is the documented exception to the ordinary load
+  // delay: consecutive partial loads merge through the pending result.
+  // The unaligned little-endian bytes at 0x101..0x104 are 22 33 44 55.
+  iop.reset();
+  iop.state().pc = 0u;
+  iop.state().gpr[8] = 0xAABBCCDDu;
+  memory.iop_write32(0x100u, 0x44332211u);
+  memory.iop_write32(0x104u, 0x88776655u);
+  memory.iop_write32(0x000u, i_type(0x22, 0, 8, 0x104)); // LWL t0,0x104(zero)
+  memory.iop_write32(0x004u, i_type(0x26, 0, 8, 0x101)); // LWR t0,0x101(zero)
+  memory.iop_write32(0x008u, 0u); // Retire second load.
+  iop.run(2);
+  check(iop.state().gpr[8] == 0x55BBCCDDu,
+        "first partial IOP load retires after the paired instruction");
+  iop.step();
+  check(iop.state().gpr[8] == 0x55443322u,
+        "adjacent IOP LWL/LWR merge pending load data without an inserted NOP");
 }
 
 void test_sif1_dma_and_external_interrupts() {
