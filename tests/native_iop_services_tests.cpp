@@ -403,6 +403,17 @@ int main() {
   for (unsigned i = 0; i < sizeof(kName); ++i)
     memory.iop_write8(kFileBuf + 128u + i,
                       static_cast<std::uint8_t>(kName[i]));
+  // Without a new DMA, the old IOP buffer cannot be attributed to this RPC.
+  require(!file_call(0u, 1048u) &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu &&
+              services.last_rpc_call().fileio_dma_size == 0u &&
+              memory.read32(kResult) == 0xBAD0C0DEu,
+          "stale IOP buffer cannot generate retail OPEN path diagnostics");
+  require(services.receive(memory, kFileBuf, 1048u, kCmdDataEe,
+                           0x005CF6C0u),
+          "second retail OPEN shape paired with fresh SIF1 DMA");
   require(!file_call(0u, 1048u) &&
               services.last_rpc_call().fileio_open_pathlike_count == 1u &&
               services.last_rpc_call().fileio_open_first_pathlike_offset == 128u &&
@@ -413,10 +424,26 @@ int main() {
               files.opens == 1 && files.closes == 1 &&
               services.take_pending_signal_sema() == 0u,
           "unknown retail OPEN shape is observed without accepting its ABI");
+  // A mismatched transfer length cannot justify interpreting IOP RAM
+  // as this call's 1048-byte payload, even if a path-like string is present.
+  require(services.receive(memory, kFileBuf, 272u, kCmdDataEe,
+                           0x005CF6C0u),
+          "mismatched FILEIO argument DMA observed");
+  require(!file_call(0u, 1048u) &&
+              services.last_rpc_call().fileio_dma_size == 272u &&
+              services.last_rpc_call().fileio_dma_exact == 0u &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu &&
+              memory.read32(kResult) == 0xBAD0C0DEu,
+          "mismatched SIF1 DMA cannot produce path-shape evidence");
   // A long printable run with no NUL terminator is not a valid candidate.
   for (unsigned i = 0; i < 1048u; ++i)
     memory.iop_write8(kFileBuf + i, 'A');
   memory.iop_write8(kFileBuf + 32u, ':');
+  require(services.receive(memory, kFileBuf, 1048u, kCmdDataEe,
+                           0x005CF6C0u),
+          "unterminated synthetic payload paired with fresh SIF1 DMA");
   require(!file_call(0u, 1048u) &&
               services.last_rpc_call().fileio_open_pathlike_count == 0u &&
               services.last_rpc_call().fileio_open_first_pathlike_offset ==
