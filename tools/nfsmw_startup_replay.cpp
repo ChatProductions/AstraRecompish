@@ -27,7 +27,10 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
               rpc.recv_size, rpc.mode, rpc.original_packet, rpc.sema,
               rpc.fileio_candidate, rpc.reject_flags,
               services.fileio_bind_count(), services.fileio_request_count(),
-             int main(int argc, char** argv) {
+              services.fileio_total_read());
+}
+
+int main(int argc, char** argv) {
   if (argc < 2 || argc > 6) {
     std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop] [--ioprp <external image>]\n");
     return 2;
@@ -91,9 +94,6 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
                    ioprp.has_cdvd ? 1u : 0u);
       return 2;
     }
-  }
-turn 2;
-    native_iop = true;
   }
   std::ifstream file(argv[1], std::ios::binary);
   if (!file) {
