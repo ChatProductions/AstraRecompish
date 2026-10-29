@@ -26,8 +26,8 @@ void test_sif_bus() {
         "IOP halfword control read includes hardware-ready bit");
   check(memory.iop_read16(0x1D000042u) == 0xF000u,
         "IOP high-halfword control read includes fixed status bits");
-  check(memory.read32(0x1000F240u) == 0u,
-        "Fixed IOP status bits do not leak into the EE control register");
+  check(memory.read32(0x1000F240u) == 0xF0000102u,
+        "EE retains its own fixed SBUS control status, including bit 8");
 
   // IOP writes to SMFLAG set bits; EE writes clear them.
   // SIFCMD uses 0x20000 to tell the EE it is initialized.
