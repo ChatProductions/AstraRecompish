@@ -226,7 +226,8 @@ int main() {
   constexpr std::uint32_t kFileBuf = 0x001E4000u;
   constexpr std::uint32_t kDestination = 0x5A01u; // deliberately unaligned
   constexpr std::uint32_t kCompletion = 0x5B00u;
-  const auto file_call = [&](std::uint32_t function, std::uint32_t size) {
+  const auto file_call = [&](std::uint32_t function, std::uint32_t size,
+                             std::uint32_t mode = 1u) {
     memory.write32(kOriginalPacket + 16u, 5u);
     packet(memory, 0x8000000Au, 0u, 0u, 64u);
     memory.iop_write32(kReceiver + 20u, kOriginalPacket);
@@ -235,7 +236,7 @@ int main() {
     memory.iop_write32(kReceiver + 36u, size);
     memory.iop_write32(kReceiver + 40u, kResult);
     memory.iop_write32(kReceiver + 44u, 4u);
-    memory.iop_write32(kReceiver + 48u, 1u);
+    memory.iop_write32(kReceiver + 48u, mode);
     memory.iop_write32(kReceiver + 52u, 0x001E3000u);
     return services.receive(memory, kReceiver, 64u, kCmdDataEe);
   };
@@ -248,6 +249,16 @@ int main() {
               files.opens == 1 && services.fileio_request_count() == 1u,
           "FILEIO open returns a tracked guest descriptor for real file");
   services.take_pending_signal_sema();
+  require(services.last_rpc_call().reject_flags == 0u &&
+              services.last_rpc_call().function == 0u &&
+              services.last_rpc_call().server == 0x001E3000u &&
+              services.last_rpc_call().bound_fileio_client == kClient,
+          "successful FILEIO call captures the real RPC fields");
+  require(!file_call(1u, 4u, 0u) &&
+              (services.last_rpc_call().reject_flags & 8u) != 0u &&
+              services.last_rpc_call().mode == 0u &&
+              services.fileio_request_count() == 1u && files.closes == 0,
+          "invalid FILEIO RPC mode is diagnosed without closing a file");
 
   memory.iop_write32(kFileBuf, 3u);
   memory.iop_write32(kFileBuf + 4u, kDestination);

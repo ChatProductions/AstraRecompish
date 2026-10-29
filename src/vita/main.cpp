@@ -143,7 +143,12 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
       "native_iop_reboot_completed=%u\nnative_iop_reboot_mode=%u\n"
       "native_iop_reboot_arg=%s\n"
       "fileio_binds=%u\nfileio_calls=%u\nfileio_last_fno=%u\n"
-      "fileio_last_result=%d\nfileio_bytes_read=%u\nfileio_last_path=%s\n",
+      "fileio_last_result=%d\nfileio_bytes_read=%u\nfileio_last_path=%s\n"
+      "rpc_packet_size=%u\nrpc_client=%08X\nrpc_bound_fileio=%08X\n"
+      "rpc_server=%08X\nrpc_fno=%u\nrpc_send_size=%u\n"
+      "rpc_recvbuf=%08X\nrpc_recv_size=%u\nrpc_mode=%u\n"
+      "rpc_original_packet=%08X\nrpc_sema=%u\n"
+      "rpc_fileio_candidate=%u\nrpc_reject_flags=%u\n",
       g_ioprp_path, g_ioprp_summary.valid ? 1u : 0u,
       g_ioprp_summary.image_size, g_ioprp_summary.entries,
       g_ioprp_summary.has_bootconf ? 1u : 0u,
@@ -161,7 +166,14 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
       iop.reboot_mode(), iop.reboot_arg(),
       iop.fileio_bind_count(), iop.fileio_request_count(),
       iop.fileio_last_function(), iop.fileio_last_result(),
-      iop.fileio_total_read(), iop.fileio_last_path());
+      iop.fileio_total_read(), iop.fileio_last_path(),
+      iop.last_rpc_call().packet_size, iop.last_rpc_call().client,
+      iop.last_rpc_call().bound_fileio_client, iop.last_rpc_call().server,
+      iop.last_rpc_call().function, iop.last_rpc_call().send_size,
+      iop.last_rpc_call().recvbuf, iop.last_rpc_call().recv_size,
+      iop.last_rpc_call().mode, iop.last_rpc_call().original_packet,
+      iop.last_rpc_call().sema, iop.last_rpc_call().fileio_candidate,
+      iop.last_rpc_call().reject_flags);
   sceIoWrite(fd, report, std::strlen(report));
   // Metadata only: no game code, bytes, or file contents leave the Vita.
   // Full per-entry details pinpoint problems that could otherwise require

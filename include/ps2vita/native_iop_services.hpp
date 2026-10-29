@@ -31,6 +31,27 @@ public:
     RebootPending
   };
 
+  // Last SIF_RPC_CALL packet metadata, including rejected calls. No guest bytes.
+  struct RpcCallTrace {
+    std::uint32_t packet_size = 0;
+    std::uint32_t client = 0;
+    std::uint32_t bound_fileio_client = 0;
+    std::uint32_t server = 0;
+    std::uint32_t function = 0xFFFFFFFFu;
+    std::uint32_t send_size = 0;
+    std::uint32_t recvbuf = 0;
+    std::uint32_t recv_size = 0;
+    std::uint32_t mode = 0;
+    std::uint32_t original_packet = 0;
+    std::uint32_t sema = 0xFFFFFFFFu;
+    std::uint32_t fileio_candidate = 0;
+    // Rejection bitmask: 1=client, 2=server, 4=recv size, 8=mode,
+    // 16=original packet, 32=semaphore, 64=client pointer,
+    // 128=FILEIO operation/args, 256=short packet, 512=wrong phase.
+    std::uint32_t reject_flags = 0;
+  };
+  const RpcCallTrace& last_rpc_call() const { return last_rpc_call_; }
+
   void reset();
   void set_file_backend(NativeFileBackend* backend) { file_backend_ = backend; }
   void boot(Memory& memory);
@@ -83,6 +104,7 @@ private:
   std::int32_t fileio_last_result_ = 0;
   std::uint32_t fileio_total_read_ = 0;
   std::array<char, 257> fileio_last_path_{};
+  RpcCallTrace last_rpc_call_{};
   Phase phase_ = Phase::Offline;
   std::uint32_t ee_receive_address_ = 0;
   std::uint32_t command_count_ = 0;

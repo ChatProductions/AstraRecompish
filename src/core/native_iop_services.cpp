@@ -68,6 +68,7 @@ void NativeIopServices::reset() {
   fileio_last_function_ = 0xFFFFFFFFu;
   fileio_last_result_ = 0;
   fileio_last_path_ = {};
+  last_rpc_call_ = {};
   pending_signal_sema_ = 0u;
   bound_cdvd_client_ = 0u;
   reboot_count_ = reboot_mode_ = 0u;
@@ -341,7 +342,15 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
       return true;
     }
   case kRpcCall: {
-    if (phase_ != Phase::RpcReady || packet_size < 56u) return false;
+    last_rpc_call_ = {};
+    last_rpc_call_.packet_size = packet_size;
+    last_rpc_call_.bound_fileio_client = bound_fileio_client_;
+    if (phase_ != Phase::RpcReady || packet_size < 56u) {
+      last_rpc_call_.reject_flags = (phase_ != Phase::RpcReady ? 512u : 0u) |
+                                    (packet_size < 56u ? 256u : 0u);
+      unsupported_cid_ = cid;
+      return false;
+    }
     const auto client = memory.iop_read32(kReceiveAddress + 28u);
     const auto rpc_number = memory.iop_read32(kReceiveAddress + 32u);
     const auto send_size = memory.iop_read32(kReceiveAddress + 36u);
@@ -350,15 +359,45 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
     const auto mode = memory.iop_read32(kReceiveAddress + 48u);
     const auto server = memory.iop_read32(kReceiveAddress + 52u);
     const auto original_pkt = memory.iop_read32(kReceiveAddress + 20u);
+    // Snapshot all packet fields before attempting an RPC. The r7 hardware
+    // report proves FILEIO bound, but cannot identify which call guard failed.
+    last_rpc_call_.client = client;
+    last_rpc_call_.server = server;
+    last_rpc_call_.function = rpc_number;
+    last_rpc_call_.send_size = send_size;
+    last_rpc_call_.recvbuf = recvbuf;
+    last_rpc_call_.recv_size = recv_size;
+    last_rpc_call_.mode = mode;
+    last_rpc_call_.original_packet = original_pkt;
+    const bool client_valid = ee_pointer_valid(memory, client, 40u);
+    if (client_valid) last_rpc_call_.sema = memory.read32(client + 8u);
+    if (bound_fileio_client_ != 0u &&
+        (client == bound_fileio_client_ || server == kFileioServerHandle)) {
+      last_rpc_call_.fileio_candidate = 1u;
+      last_rpc_call_.reject_flags =
+          (client != bound_fileio_client_ ? 1u : 0u) |
+          (server != kFileioServerHandle ? 2u : 0u) |
+          (recv_size != 4u ? 4u : 0u) |
+          (mode != 1u ? 8u : 0u) |
+          (!ee_pointer_valid(memory, original_pkt, 28u) ? 16u : 0u) |
+          (last_rpc_call_.sema == 0u || last_rpc_call_.sema > 64u ? 32u : 0u) |
+          (!client_valid ? 64u : 0u);
+    }
     if (client == bound_fileio_client_ && client != 0u &&
         server == kFileioServerHandle) {
-      if (!ee_pointer_valid(memory, client, 40u)) return false;
-      const auto sema = memory.read32(client + 8u);
+      if (!client_valid) {
+        unsupported_cid_ = cid;
+        unsupported_rpc_sid_ = kFileioServer;
+        return false;
+      }
+      const auto sema = last_rpc_call_.sema;
       if (recv_size != 4u || mode != 1u ||
           !ee_pointer_valid(memory, original_pkt, 28u) ||
           sema == 0u || sema > 64u ||
           !execute_fileio(memory, rpc_number, send_size,
                           recvbuf, recv_size)) {
+        if (last_rpc_call_.reject_flags == 0u)
+          last_rpc_call_.reject_flags = 128u;
         unsupported_cid_ = cid;
         unsupported_rpc_sid_ = kFileioServer;
         return false;

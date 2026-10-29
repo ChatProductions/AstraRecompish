@@ -24,9 +24,9 @@ jobs:
       - name: Configure native host tests
         run: cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
       - name: Compile CPU differential tests
-        run: cmake --build build-host --parallel 2 --target ps2core_tests bare_elf_startup_syscalls_tests
+        run: cmake --build build-host --parallel 2 --target ps2core_tests bare_elf_startup_syscalls_tests native_iop_services_tests ioprp_image_tests
       - name: Run CPU and translator regression tests
-        run: ctest --test-dir build-host --output-on-failure -R '^(ps2core_tests|bare_elf_startup_syscalls_tests|astrair_builder_tests)$'
+        run: ctest --test-dir build-host --output-on-failure -R '^(ps2core_tests|bare_elf_startup_syscalls_tests|native_iop_services_tests|ioprp_image_tests|astrair_builder_tests)$'
 
       - name: Generate freely redistributable guest-code fixture
         run: PYTHONDONTWRITEBYTECODE=1 python3 -B tools/make_smoke_elf.py /tmp/astrarecomp-private-aot-smoke.elf
