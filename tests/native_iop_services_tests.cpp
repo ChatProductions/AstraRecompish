@@ -1,6 +1,8 @@
+#include "ps2vita/elf_compatibility.hpp"
 #include "ps2vita/memory.hpp"
 #include "ps2vita/native_iop_services.hpp"
 
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -59,6 +61,27 @@ public:
 } // namespace
 
 int main() {
+  // The tag is an EE-side expectation only, not a synthetic IOP reply.
+  std::array<std::uint8_t, 40> tagged_elf{};
+  tagged_elf[0] = 0x7Fu; tagged_elf[1] = 'E';
+  tagged_elf[2] = 'L'; tagged_elf[3] = 'F';
+  constexpr char kSdkTag[] = "PsIIlibkernl2800";
+  std::memcpy(tagged_elf.data() + 8u, kSdkTag, sizeof(kSdkTag) - 1u);
+  require(ps2vita::elf_libkernl_expected_version(
+              tagged_elf.data(), tagged_elf.size()) == 0x30303832u,
+          "EE libkernl tag reports its four literal SDK digits");
+  require(ps2vita::elf_libkernl_expected_version(
+              tagged_elf.data(), 8u + sizeof(kSdkTag) - 2u) == 0u,
+          "truncated EE libkernl tag is rejected");
+  tagged_elf[8u + 12u] = 'X';
+  require(ps2vita::elf_libkernl_expected_version(
+              tagged_elf.data(), tagged_elf.size()) == 0u,
+          "non-decimal EE libkernl tag is rejected");
+  tagged_elf[8u + 12u] = '2';
+  tagged_elf[0] = 0u;
+  require(ps2vita::elf_libkernl_expected_version(
+              tagged_elf.data(), tagged_elf.size()) == 0u,
+          "arbitrary non-ELF bytes cannot supply a FILEIO tag");
   ps2vita::Memory memory;
   ps2vita::NativeIopServices services;
   constexpr std::uint32_t kSmFlagEe = 0x1000F230u;

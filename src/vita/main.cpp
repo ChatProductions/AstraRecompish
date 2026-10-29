@@ -1,5 +1,6 @@
 #include "ps2vita/aot.hpp"
 #include "ps2vita/emulator.hpp"
+#include "ps2vita/elf_compatibility.hpp"
 #include "ps2vita/execution_budget.hpp"
 #include "ps2vita/gs_display_preview.hpp"
 #include "ps2vita/ioprp_image.hpp"
@@ -52,25 +53,11 @@ bool prefix_equal(const char* path, const char* prefix) {
   return true;
 }
 
-// Retail PS2 libkernl embeds its four-byte SDK compatibility identifier
-// immediately after "PsIIlibkernl" in the ELF. Only a well-formed tag is
-// allowed to opt in to the FILEIO 0xFF version RPC on the native startup path.
+// This is the EE's expected SDK tag, not an independently verified IOP
+// FILEIO response. Keep host and Vita parsing behavior identical.
 std::uint32_t elf_fileio_compatibility_version(
     const std::vector<std::uint8_t>& elf) {
-  constexpr char kTag[] = "PsIIlibkernl";
-  constexpr std::size_t kTagBytes = sizeof(kTag) - 1u;
-  if (elf.size() < kTagBytes + 4u) return 0u;
-  for (std::size_t i = 0; i <= elf.size() - kTagBytes - 4u; ++i) {
-    if (std::memcmp(elf.data() + i, kTag, kTagBytes) != 0) continue;
-    std::uint32_t result = 0u;
-    for (std::size_t n = 0; n < 4u; ++n) {
-      const auto ch = elf[i + kTagBytes + n];
-      if (ch < '0' || ch > '9') return 0u;
-      result |= static_cast<std::uint32_t>(ch) << (n * 8u);
-    }
-    return result;
-  }
-  return 0u;
+  return ps2vita::elf_libkernl_expected_version(elf.data(), elf.size());
 }
 
 // Read-only PS2 FILEIO namespace. Disc files belong under the user's private

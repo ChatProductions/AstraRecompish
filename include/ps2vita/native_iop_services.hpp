@@ -69,6 +69,9 @@ public:
   void set_fileio_compatibility_version(std::uint32_t version) {
     fileio_compatibility_version_ = version;
   }
+  std::uint32_t fileio_compatibility_version() const {
+    return fileio_compatibility_version_;
+  }
   void permit_reboot_with_verified_image(bool permitted) {
     verified_ioprp_ = permitted;
   }

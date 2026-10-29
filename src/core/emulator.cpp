@@ -79,6 +79,8 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   native_ioprp_verified_ = false;
   native_iop_reboot_ready_at_ = 0u;
   native_iop_.reset();
+  // A different guest must never inherit a prior title's FILEIO ABI token.
+  native_iop_.set_fileio_compatibility_version(0u);
   sif_dma_last_id_ = 0u;
   bios_iop_enabled_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
@@ -121,6 +123,8 @@ bool Emulator::boot_bios() {
   native_ioprp_verified_ = false;
   native_iop_reboot_ready_at_ = 0u;
   native_iop_.reset();
+  // A different guest must never inherit a prior title's FILEIO ABI token.
+  native_iop_.set_fileio_compatibility_version(0u);
   sif_dma_last_id_ = 0u;
   bios_iop_enabled_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;

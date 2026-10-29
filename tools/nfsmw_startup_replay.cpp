@@ -1,6 +1,7 @@
 // Host-only startup replay for a privately supplied title ELF.
 // No game image or translated game code is committed or packaged with this tool.
 #include "ps2vita/emulator.hpp"
+#include "ps2vita/elf_compatibility.hpp"
 #include "ps2vita/ioprp_image.hpp"
 #include "native_host_file_backend.hpp"
 
@@ -160,6 +161,12 @@ int main(int argc, char** argv) {
     emulator->set_native_file_backend(host_files.get());
   }
   if (ioprp_path) emulator->enable_verified_ioprp_reboot(true);
+  // Report the EE's expectation without claiming that the private IOP
+  // firmware would return the same token. Host replay does not arm 0xFF.
+  const auto ee_libkernl_tag =
+      ps2vita::elf_libkernl_expected_version(bytes.data(), bytes.size());
+  std::printf("fileio_ee_libkernl_tag=%08X\nfileio_version_reply_armed=0\n",
+              ee_libkernl_tag);
   std::printf("replay=host-interpreter-only\nnative_iop=%u\nbios_iop=%u\nentry=%08X\n"
               "ioprp_valid=%u\nioprp_entries=%u\nioprp_padding_missing=%u\n"
               "file_root_enabled=%u\n"

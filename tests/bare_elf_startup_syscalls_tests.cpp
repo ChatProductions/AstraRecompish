@@ -115,8 +115,16 @@ int main() {
               emulator.cpu().state().gpr[2] == 0x02000000u,
           "SetupHeap -1 size is bounded by previously initialized stack");
 
-  require(emulator.load_elf(elf.data(), elf.size()).ok,
-          "loading a fresh ELF resets startup kernel state");
+  // A same-title reset may retain the explicit ABI token, but loading a
+  // different ELF must never reuse that prior title's FILEIO version.
+  emulator.set_native_fileio_compatibility_version(0x30303832u);
+  emulator.reset();
+  require(emulator.native_iop_services().fileio_compatibility_version() ==
+              0x30303832u,
+          "same-title reset preserves the explicitly configured FILEIO ABI");
+  require(emulator.load_elf(elf.data(), elf.size()).ok &&
+              emulator.native_iop_services().fileio_compatibility_version() == 0u,
+          "fresh ELF clears any prior title's FILEIO ABI token");
   require(emulator.run_slice(1u) == ps2vita::StopReason::Syscall,
           "loading a fresh ELF disables startup HLE until explicitly armed");
 
@@ -714,6 +722,11 @@ int main() {
               !bios_model.bios_iop_for_elf_enabled() &&
               bios_model.iop().state().cycles == 0u,
           "loading another guest ELF disarms the previous BIOS IOP");
+
+  bios_model.set_native_fileio_compatibility_version(0x30303832u);
+  require(bios_model.boot_bios() &&
+              bios_model.native_iop_services().fileio_compatibility_version() == 0u,
+          "BIOS boot cannot inherit a previous title's FILEIO ABI token");
 
   ps2vita::Emulator bad_bios;
   std::fill(synthetic_bios.begin(), synthetic_bios.begin() + 4u, 0xFFu);
