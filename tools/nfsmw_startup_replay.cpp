@@ -2,6 +2,7 @@
 // No game image or translated game code is committed or packaged with this tool.
 #include "ps2vita/emulator.hpp"
 #include "ps2vita/ioprp_image.hpp"
+#include "native_host_file_backend.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -31,20 +32,24 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 6) {
-    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop] [--ioprp <external image>]\n");
+  if (argc < 2 || argc > 8) {
+    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop] [--ioprp <external image>] [--file-root <external directory>]\n");
     return 2;
   }
   std::uint64_t limit = 12000000u;
   bool limit_set = false;
   bool native_iop = false;
   const char* ioprp_path = nullptr;
+  const char* file_root_path = nullptr;
   for (int i = 2; i < argc; ++i) {
     if (std::strcmp(argv[i], "--native-iop") == 0 && !native_iop) {
       native_iop = true;
     } else if (std::strcmp(argv[i], "--ioprp") == 0 &&
                ioprp_path == nullptr && i + 1 < argc) {
       ioprp_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--file-root") == 0 &&
+               file_root_path == nullptr && i + 1 < argc) {
+      file_root_path = argv[++i];
     } else if (!limit_set && argv[i][0] != '-') {
       char* end = nullptr;
       limit = std::strtoull(argv[i], &end, 10);
@@ -61,6 +66,11 @@ int main(int argc, char** argv) {
   }
   if (ioprp_path && (!native_iop || *ioprp_path == '\0')) {
     std::fprintf(stderr, "--ioprp requires --native-iop and an image path\n");
+    return 2;
+  }
+
+  if (file_root_path && (!native_iop || *file_root_path == '\0')) {
+    std::fprintf(stderr, "--file-root requires --native-iop and a directory\n");
     return 2;
   }
 
@@ -109,12 +119,25 @@ int main(int argc, char** argv) {
   }
   emulator->enable_bare_elf_startup_syscalls(true);
   emulator->enable_native_iop_services(native_iop);
+  // No FILEIO server is registered without an explicit host file root.
+  // This maps host:NFS to <root>/NFS and cdrom0: to <root>/disc;
+  // neither device is mounted or populated automatically.
+  std::unique_ptr<ps2vita::HostReadOnlyFileBackend> host_files;
+  if (file_root_path) {
+    host_files = std::make_unique<ps2vita::HostReadOnlyFileBackend>(file_root_path);
+    if (!host_files->valid()) {
+      std::fprintf(stderr, "invalid external FILEIO root directory\n");
+      return 2;
+    }
+    emulator->set_native_file_backend(host_files.get());
+  }
   if (ioprp_path) emulator->enable_verified_ioprp_reboot(true);
   std::printf("replay=host-interpreter-only\nnative_iop=%u\nentry=%08X\n"
-              "ioprp_valid=%u\nioprp_entries=%u\nioprp_padding_missing=%u\n",
+              "ioprp_valid=%u\nioprp_entries=%u\nioprp_padding_missing=%u\n"
+              "file_root_enabled=%u\n",
               native_iop ? 1u : 0u, loaded.entry,
               ioprp.valid ? 1u : 0u, ioprp.entries,
-              ioprp.final_missing_padding);
+              ioprp.final_missing_padding, host_files ? 1u : 0u);
   std::uint64_t next_progress = 1000000u;
   std::uint32_t last_deci2_count = 0u;
   unsigned sifcmd_wait_samples = 0u;
