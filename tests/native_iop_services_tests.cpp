@@ -384,6 +384,10 @@ int main() {
               services.last_rpc_call().fileio_dma_source == 0x005CF6C0u &&
               services.last_rpc_call().fileio_dma_size == 1048u &&
               services.last_rpc_call().fileio_dma_exact == 1u &&
+              services.last_rpc_call().fileio_open_pathlike_count == 1u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset == 4u &&
+              services.last_rpc_call().fileio_open_first_pathlike_length ==
+                  sizeof(kName) - 1u &&
               services.last_rpc_call().function == 0u &&
               services.last_rpc_call().send_size == 1048u &&
               services.last_rpc_call().reject_flags == 1024u &&
@@ -392,11 +396,43 @@ int main() {
               memory.read32(kResult) == 0xBAD0C0DEu &&
               services.take_pending_signal_sema() == 0u,
           "unverified retail OPEN ABI rejects without host-file or reply side effects");
+  // A different synthetic 1048-byte layout must report its own structural
+  // offset, not assume that the PS2SDK 272-byte prefix is the retail ABI.
+  for (unsigned i = 0; i < 1048u; ++i)
+    memory.iop_write8(kFileBuf + i, 0u);
+  for (unsigned i = 0; i < sizeof(kName); ++i)
+    memory.iop_write8(kFileBuf + 128u + i,
+                      static_cast<std::uint8_t>(kName[i]));
+  require(!file_call(0u, 1048u) &&
+              services.last_rpc_call().fileio_open_pathlike_count == 1u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset == 128u &&
+              services.last_rpc_call().fileio_open_first_pathlike_length ==
+                  sizeof(kName) - 1u &&
+              services.last_rpc_call().reject_flags == 1024u &&
+              memory.read32(kResult) == 0xBAD0C0DEu &&
+              files.opens == 1 && files.closes == 1 &&
+              services.take_pending_signal_sema() == 0u,
+          "unknown retail OPEN shape is observed without accepting its ABI");
+  // A long printable run with no NUL terminator is not a valid candidate.
+  for (unsigned i = 0; i < 1048u; ++i)
+    memory.iop_write8(kFileBuf + i, 'A');
+  memory.iop_write8(kFileBuf + 32u, ':');
+  require(!file_call(0u, 1048u) &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu &&
+              services.last_rpc_call().reject_flags == 1024u &&
+              files.opens == 1 && files.closes == 1 &&
+              memory.read32(kResult) == 0xBAD0C0DEu,
+          "unterminated retail OPEN bytes are not mistaken for a path");
 
   require(!file_call(12u, 4u) && services.fileio_last_function() == 12u &&
               services.last_rpc_call().fileio_dma_source == 0u &&
               services.last_rpc_call().fileio_dma_size == 0u &&
-              services.last_rpc_call().fileio_dma_exact == 0u,
+              services.last_rpc_call().fileio_dma_exact == 0u &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu,
           "unsupported FILEIO operations remain explicit fault boundaries");
   // The r11 native Vita trace reached retail libkernl FILEIO 0xFF version
   // negotiation. The generic service must still reject it when no title
