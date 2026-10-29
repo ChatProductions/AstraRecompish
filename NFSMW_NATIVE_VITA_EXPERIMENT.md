@@ -37,7 +37,28 @@ has the previous 4-byte restriction, so a source-only change does not
 magically update it. The r11 binary correction described below addresses the two size guards,
 while a full title-specific rebuild remains outstanding. No game disc is mounted, and no playable NFS MW build is claimed.
 
-### Relay r11 (offline binary correction, not hardware-validated)
+### Relay r11 hardware result: first real FILEIO handler reached
+
+Relay files `00000071-startup.bin`, `00000072-fault.bin` and
+`00000073-progress.bin` confirm r11 on hardware. Its FILEIO request
+count advanced from 0 to **1**, proving the previous 4-vs-8-byte reply
+guard was bypassed. However the first actual FILEIO RPC function is
+**255 (0xFF)**, not open/close/read/seek. The native server does not
+implement this function and rejects it explicitly. Guest execution still
+ends at `0x004958E4` after 6,871,312 cycles and 3,805,493 AOT
+instructions; no file data was read and no gameplay progress was verified.
+
+Research suggests 0xFF is a **Sony FILEIO RPC version retrieval** used
+during `sceFsInit` / `_fs_version`, a separate protocol from open/read.
+The PS2SDK LOADFILE common definitions independently use 0xFF for
+version retrieval; its open-source FILEIO common enum does not define
+0xFF. The correct FILEIO 8-byte response layout and version values must
+be verified against the actual module in the external IOPRP image and
+the guest's EE client before any service reply is implemented. Returning
+a made-up version or silently acknowledging the request would conceal
+an incompatibility. No further hardware logs are required.
+
+### Relay r11 (offline binary correction, subsequently hardware-tested)
 
 The public Relay r11 package `NFSMW11_AOT_FILEIO8_20261029.vpk` now
 patches the two compiled FILEIO reply-size guards in the original title-specific
@@ -53,8 +74,8 @@ That checksum was separately confirmed against the published bytes.
 This direct binary patch changes only the two observed rejection guards; unlike
 the newer source implementation, the compiled file-operation reply writer still
 updates only the first 32-bit result word, not the optional second word.
-**No further hardware logs are expected and no on-device r11 advancement is
-claimed.** The correct next development direction is a properly rebuilt
+**No further hardware logs are required.** The r11 logs confirm the guard
+fix reached function 255, but not further guest execution. The correct next development direction is a properly rebuilt
 title-specific AOT executable and host-side testing of subsequent IOP and
 disc dependencies, not another round of single-field hardware instrumentation.
 
