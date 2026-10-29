@@ -34,9 +34,30 @@ the final on-device evidence for this iteration. The public AstraRecomp CI build
 `PS2VITA01` VPK with a smoke fixture; it does not contain the user's
 private title-specific AOT translation. The published Relay r10 VPK still
 has the previous 4-byte restriction, so a source-only change does not
-magically update it. A rebuilt private-title executable or a carefully
-validated equivalent binary change would be required to test the fix on
-hardware. No game disc is mounted, and no playable NFS MW build is claimed.
+magically update it. The r11 binary correction described below addresses the two size guards,
+while a full title-specific rebuild remains outstanding. No game disc is mounted, and no playable NFS MW build is claimed.
+
+### Relay r11 (offline binary correction, not hardware-validated)
+
+The public Relay r11 package `NFSMW11_AOT_FILEIO8_20261029.vpk` now
+patches the two compiled FILEIO reply-size guards in the original title-specific
+Vita executable so both 4- and 8-byte requests can proceed to the remaining
+validation and operation code. The r10 temporary telemetry hook is restored to
+ordinary error reporting. Its executable patcher pins the source package SHA,
+requires exact original Thumb-2 bytes and alignment cave contents, checks the
+Vita title ID, independently decompresses the patched FSELF, and verifies the
+archive. GitHub Actions run 40804790247 published the resulting VPK with
+SHA-256 `5f85644f2851eff0568c9b8811d765740266e3b01a1e3daa204bc240a4ca4336`.
+That checksum was separately confirmed against the published bytes.
+
+This direct binary patch changes only the two observed rejection guards; unlike
+the newer source implementation, the compiled file-operation reply writer still
+updates only the first 32-bit result word, not the optional second word.
+**No further hardware logs are expected and no on-device r11 advancement is
+claimed.** The correct next development direction is a properly rebuilt
+title-specific AOT executable and host-side testing of subsequent IOP and
+disc dependencies, not another round of single-field hardware instrumentation.
+
 
 ## VitaTunnel r7: real, read-only FILEIO RPC operations
 
