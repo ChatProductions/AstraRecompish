@@ -134,6 +134,30 @@ void exercise_real_fileio_rpc(ps2vita::HostReadOnlyFileBackend& backend) {
   require(!call(99u, 4u) &&
               services.last_rpc_call().reject_flags != 0u,
           "unknown FILEIO RPC operation is rejected without fabricated result");
+
+  // A backend can be detached while a guest descriptor is open. Releasing it
+  // must close the actual host handle, not only invalidate the guest slot.
+  // This is also a regression against accidentally closing a descriptor on
+  // the *replacement* backend after changing the pointer.
+  open_path("host:NFS\\TEST.BIN");
+  require(call(0u, 272u) && memory.read32(kReply) == 3u,
+          "open a real file before detaching its backend");
+  services.take_pending_signal_sema();
+  const auto calls_before_detach = services.fileio_request_count();
+  services.set_file_backend(nullptr);
+  require(!call(1u, 4u) &&
+              services.fileio_request_count() == calls_before_detach,
+          "detached FILEIO service cannot use a stale RPC binding");
+  std::array<int, 16> reopened{};
+  for (auto& handle : reopened) {
+    handle = backend.open("host:NFS\\TEST.BIN", 1u);
+    require(handle > 0, "detaching backend released the original host handle");
+  }
+  require(backend.open("host:NFS\\TEST.BIN", 1u) == -24,
+          "backend descriptor limit remains enforced after detach");
+  for (const auto handle : reopened)
+    require(backend.close(handle) == 0,
+            "cleanup of backend detach regression descriptors");
 }
 
 int main() {

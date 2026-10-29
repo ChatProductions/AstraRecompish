@@ -53,7 +53,16 @@ public:
   const RpcCallTrace& last_rpc_call() const { return last_rpc_call_; }
 
   void reset();
-  void set_file_backend(NativeFileBackend* backend) { file_backend_ = backend; }
+  // Replacing a backend must close handles on their *owning* backend before
+  // the pointer changes. A previous FILEIO bind cannot remain usable after
+  // detaching or replacing its filesystem service.
+  void set_file_backend(NativeFileBackend* backend) {
+    if (file_backend_ == backend) return;
+    close_all_files();
+    file_backend_ = backend;
+    bound_fileio_client_ = 0u;
+    pending_signal_sema_ = 0u;
+  }
   void boot(Memory& memory);
   void permit_reboot_with_verified_image(bool permitted) {
     verified_ioprp_ = permitted;
