@@ -1357,7 +1357,12 @@ std::uint8_t Memory::iop_read8(std::uint32_t address) const {
   if (p >= 0x1D000000u && p <= 0x1D000063u) {
     const auto slot = p & 0x70u;
     if (slot <= 0x60u) {
-      const auto word = read32(0x1000F200u + slot);
+      // IOP SBUS control exposes fixed hardware-ready/status bits.
+      // PCSX2's IOP MMIO contract reports F0000002 on 0x1D000040
+      // in addition to the EE-visible writable register contents.
+      // Without these bits, retail IOP firmware can stall before SIFCMD.
+      const auto word = read32(0x1000F200u + slot) |
+          (slot == 0x40u ? 0xF0000002u : 0u);
       return static_cast<std::uint8_t>(word >> ((p & 3u) * 8u));
     }
   }
@@ -1537,6 +1542,25 @@ void Memory::iop_write8(std::uint32_t address, std::uint8_t value) {
 
 void Memory::iop_write16(std::uint32_t address, std::uint16_t value) {
   const auto p = address & 0x1FFFFFFFu;
+  // Halfword SBUS writes must reach the shared EE/IOP register bank.
+  // Previously they fell through to iop_write8(), which ignores 0x1D000000;
+  // this silently dropped IOP SIF setup and flag transitions.
+  if (p >= 0x1D000000u && p <= 0x1D000062u && (p & 1u) == 0u) {
+    const auto aligned = p & ~3u;
+    const auto slot = aligned & 0x70u;
+    const auto shift = (p & 2u) * 8u;
+    const auto bits = static_cast<std::uint32_t>(value) << shift;
+    if (slot == 0x10u) {
+      const auto mask = 0xFFFFu << shift;
+      iop_write32(aligned, (iop_read32(aligned) & ~mask) | bits);
+    } else if (slot == 0x20u || slot == 0x30u ||
+               slot == 0x40u || slot == 0x60u) {
+      // These are write-one-to-clear, write-one-to-set, or toggle ports.
+      iop_write32(aligned, bits);
+    }
+    // Register 0x00 is EE-owned and not writable from the IOP.
+    return;
+  }
   if (p == 0x1F8014A4u) {
     const auto offset = static_cast<std::size_t>(p - 0x1F801000u);
     const auto current = static_cast<std::uint16_t>(iop_hw_[offset]) |
