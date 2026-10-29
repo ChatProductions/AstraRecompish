@@ -217,8 +217,13 @@ int main() {
     memory.iop_write8(kReceiver + 24u + i,
                       static_cast<std::uint8_t>(kRebootPath[i]));
   require(services.receive(memory, kReceiver, 104u, kCmdDataEe) &&
-              services.phase() == ps2vita::NativeIopServices::Phase::RebootPending &&
-              services.complete_reboot(memory) &&
+              services.phase() == ps2vita::NativeIopServices::Phase::RebootPending,
+          "verified IOPRP accepts a bounded native reboot request");
+  // A configured synthetic version belongs to the *previous* IOP module.
+  // Rebooting must invalidate it rather than silently reuse the old token.
+  services.set_fileio_compatibility_version(0x12345678u);
+  require(services.complete_reboot(memory) &&
+              services.fileio_compatibility_version() == 0u &&
               services.phase() == ps2vita::NativeIopServices::Phase::AwaitingInit &&
               services.reboot_completed() == 1u &&
               (memory.read32(kSmFlagEe) & 0x70000u) == 0x70000u,
@@ -571,8 +576,9 @@ int main() {
           "explicit synthetic version RPC accepts the observed eight-byte reply envelope");
 
   services.reset();
-  require(services.fileio_request_count() == 0u && files.closes == 1,
-          "service reset clears FILEIO diagnostics without double-closing");
+  require(services.fileio_request_count() == 0u && files.closes == 1 &&
+              services.fileio_compatibility_version() == 0u,
+          "service reset clears FILEIO diagnostics and version without double-closing");
   std::puts("Native IOP service handshake tests passed.");
   return 0;
 }
