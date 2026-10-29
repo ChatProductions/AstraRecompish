@@ -107,8 +107,9 @@ bool NativeIopServices::execute_fileio(
     Memory& memory, std::uint32_t function, std::uint32_t send_size,
     std::uint32_t recvbuf, std::uint32_t recv_size) {
   // PS2SDK fileio-common.h: RPC fno 0=open, 1=close, 2=read,
-  // 3=write, 4=lseek. Arguments were copied by the EE to our IOP-side
-  // RPC buffer through a separate SIF DMA operation.
+  // 3=write, 4=lseek. Retail libkernl also uses fno 0xFF to fetch a
+  // four-byte FILEIO version token during sceFsInit. Arguments were copied
+  // by the EE to our IOP-side RPC buffer through a separate SIF DMA.
   // Retail SIFRPC clients may reserve two result words even when FILEIO
   // returns one signed 32-bit status. The r10 Vita trace observed 8 bytes.
   // Accept exactly 4 or 8 and validate the whole requested buffer.
@@ -120,6 +121,16 @@ bool NativeIopServices::execute_fileio(
   fileio_last_function_ = function;
   std::int32_t answer = -38; // ENOSYS; not a fabricated successful reply.
   switch (function) {
+  case 0xFFu: {
+    // Retail SDK 2.x sceFsInit sends an RPC version query (typically four
+    // request bytes and four reply bytes). A title-specific native HLE may
+    // advertise the loaded ELF's four-character libkernl compatibility tag.
+    // Without a configured ABI version we must not invent IOP module data.
+    if (fileio_compatibility_version_ == 0u ||
+        (send_size != 0u && send_size != 4u)) return false;
+    answer = static_cast<std::int32_t>(fileio_compatibility_version_);
+    break;
+  }
   case 0u: { // _fio_open_arg: flags (u32) + path[256].
     if (send_size < 260u) return false;
     const auto flags = memory.iop_read32(kFileioServerBuffer);

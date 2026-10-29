@@ -29,7 +29,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-bios-iop-exp1";
+constexpr const char* kBuildId = "nfsmw-aot-native-fileio-ver-r14";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -50,6 +50,27 @@ bool prefix_equal(const char* path, const char* prefix) {
     if (a != b) return false;
   }
   return true;
+}
+
+// Retail PS2 libkernl embeds its four-byte SDK compatibility identifier
+// immediately after "PsIIlibkernl" in the ELF. Only a well-formed tag is
+// allowed to opt in to the FILEIO 0xFF version RPC on the native startup path.
+std::uint32_t elf_fileio_compatibility_version(
+    const std::vector<std::uint8_t>& elf) {
+  constexpr char kTag[] = "PsIIlibkernl";
+  constexpr std::size_t kTagBytes = sizeof(kTag) - 1u;
+  if (elf.size() < kTagBytes + 4u) return 0u;
+  for (std::size_t i = 0; i <= elf.size() - kTagBytes - 4u; ++i) {
+    if (std::memcmp(elf.data() + i, kTag, kTagBytes) != 0) continue;
+    std::uint32_t result = 0u;
+    for (std::size_t n = 0; n < 4u; ++n) {
+      const auto ch = elf[i + kTagBytes + n];
+      if (ch < '0' || ch > '9') return 0u;
+      result |= static_cast<std::uint32_t>(ch) << (n * 8u);
+    }
+    return result;
+  }
+  return 0u;
 }
 
 // Read-only PS2 FILEIO namespace. Disc files belong under the user's private
@@ -581,11 +602,8 @@ int main() {
     std::snprintf(message, sizeof(message), "BUILT-IN LOAD ERROR: %s", initial.error);
 
   std::vector<std::uint8_t> bios;
-  if (read_file(kBiosPath, bios) && emulator.load_bios(bios.data(), bios.size()) &&
-      emulator.boot_bios()) {
-    running = true;
-    std::snprintf(message, sizeof(message), "BIOS AUTOLOADED / RUNNING");
-  }
+  if (read_file(kBiosPath, bios) && emulator.load_bios(bios.data(), bios.size()))
+    std::snprintf(message, sizeof(message), "BIOS AVAILABLE / CIRCLE TO BOOT");
   write_probe("monitor loop ready\n");
   bool first_frame_presented = false;
 
@@ -631,27 +649,28 @@ int main() {
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
         if (result.ok && loaded_external) {
           inspect_external_ioprp();
-          // A valid user-supplied BIOS selects the actual R3000A IOP.
-          // The AOT EE remains native; no Sony firmware enters the package.
-          const bool bios_iop =
-              emulator.enable_bios_iop_for_elf(emulator.memory().has_bios());
+          // Use the native IOP startup path by default. It has already
+          // completed the real title's SIF/IOPRP reboot on physical Vita.
+          // BIOS boot remains available separately through Circle.
+          emulator.enable_bios_iop_for_elf(false);
           const bool usable_ioprp = g_ioprp_summary.valid &&
                                    g_ioprp_summary.has_sifcmd &&
                                    g_ioprp_summary.has_cdvd;
-          if (!bios_iop) {
-            emulator.enable_native_iop_services(true);
-            emulator.enable_verified_ioprp_reboot(usable_ioprp);
-          }
+          const auto fileio_version = elf_fileio_compatibility_version(image);
+          emulator.set_native_fileio_compatibility_version(fileio_version);
+          emulator.enable_native_iop_services(true);
+          emulator.enable_verified_ioprp_reboot(usable_ioprp);
           const bool enabled = emulator.cpu().set_startup_aot_package(
               &ps2vita::generated_private_game_aot_package());
           char probe[512];
           std::snprintf(probe, sizeof(probe),
               "build=%s\nprivate title AOT %s\n"
-              "bios_iop=%u\nnative_iop=%u\nioprp=%s\npath=%s\nentries=%u\n"
+              "bios_iop=0\nnative_iop=1\nfileio_sdk=%08X\n"
+              "ioprp=%s\npath=%s\nentries=%u\n"
               "bootconf=%u\nsifcmd=%u\ncdvd=%u\n"
               "padding_missing=%u\n",
               kBuildId, enabled ? "armed" : "validation failed",
-              bios_iop ? 1u : 0u, bios_iop ? 0u : 1u,
+              fileio_version,
               usable_ioprp ? "ROMDIR validated" :
               g_ioprp_summary.valid ? "required SIFCMD/CDVD module missing" :
               g_ioprp_summary.error,

@@ -342,8 +342,9 @@ int main() {
   services.take_pending_signal_sema();
   require(!file_call(12u, 4u) && services.fileio_last_function() == 12u,
           "unsupported FILEIO operations remain explicit fault boundaries");
-  // r11 hardware observed 0xFF. This may query a FILEIO version, but the
-  // actual private IOPRP and EE-side reply protocol have not been verified.
+  // The r11 native Vita trace reached retail libkernl FILEIO 0xFF version
+  // negotiation. The generic service must still reject it when no title
+  // ABI was supplied (no invented IOP firmware version).
   const auto before_ff = services.fileio_request_count();
   const auto before_open = files.opens;
   const auto before_close = files.closes;
@@ -359,7 +360,32 @@ int main() {
               memory.read32(kResult + 4u) == 0xC0FFEE02u &&
               files.opens == before_open && files.closes == before_close &&
               services.take_pending_signal_sema() == 0u,
-          "r11 FILEIO 0xFF rejects without fake reply or file side effects");
+          "unconfigured FILEIO 0xFF rejects without reply or file side effects");
+
+  // NFSMW's real ELF carries the tag PsIIlibkernl2800, i.e. four version
+  // bytes '2','8','0','0'. Retail sceFsInit consumes a four-byte RPC answer.
+  constexpr std::uint32_t kNfsmwLibkernl2800 = 0x30303832u;
+  services.set_fileio_compatibility_version(kNfsmwLibkernl2800);
+  memory.iop_write32(kFileBuf, 0x12345678u); // version send buffer is opaque
+  require(!file_call(0xFFu, 5u, 0u, 4u) &&
+              services.last_rpc_call().reject_flags == 128u &&
+              memory.read32(kResult) == 0xC0FFEE01u,
+          "malformed version RPC must not write a compatibility response");
+  require(file_call(0xFFu, 4u, 0u, 4u) &&
+              memory.read32(kResult) == kNfsmwLibkernl2800 &&
+              services.last_rpc_call().reject_flags == 0u &&
+              services.fileio_last_function() == 0xFFu &&
+              services.fileio_last_result() ==
+                  static_cast<std::int32_t>(kNfsmwLibkernl2800) &&
+              files.opens == before_open && files.closes == before_close &&
+              services.take_pending_signal_sema() == 14u,
+          "retail sceFsInit version RPC completes with title's ABI tag");
+  memory.write32(kResult + 4u, 0xC0FFEE02u);
+  require(file_call(0xFFu, 0u, 1u, 8u) &&
+              memory.read32(kResult) == kNfsmwLibkernl2800 &&
+              memory.read32(kResult + 4u) == 0u &&
+              services.take_pending_signal_sema() == 14u,
+          "retail version RPC accepts the observed eight-byte reply envelope");
 
   services.reset();
   require(services.fileio_request_count() == 0u && files.closes == 1,

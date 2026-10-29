@@ -38,6 +38,10 @@ public:
   void set_native_file_backend(NativeFileBackend* backend) {
     native_iop_.set_file_backend(backend);
   }
+  // Only title-specific startup HLE may advertise a FILEIO ABI version.
+  void set_native_fileio_compatibility_version(std::uint32_t version) {
+    native_iop_.set_fileio_compatibility_version(version);
+  }
   const NativeIopServices& native_iop_services() const { return native_iop_; }
   void service_graphics();
   void reset();

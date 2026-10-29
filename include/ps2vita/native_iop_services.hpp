@@ -64,6 +64,11 @@ public:
     pending_signal_sema_ = 0u;
   }
   void boot(Memory& memory);
+  // Four-byte libkernl/FILEIO ABI token, supplied explicitly by the loaded
+  // title's SDK tag. Zero disables version negotiation for generic ELFs.
+  void set_fileio_compatibility_version(std::uint32_t version) {
+    fileio_compatibility_version_ = version;
+  }
   void permit_reboot_with_verified_image(bool permitted) {
     verified_ioprp_ = permitted;
   }
@@ -111,6 +116,7 @@ private:
   std::uint32_t fileio_request_count_ = 0;
   std::uint32_t fileio_last_function_ = 0xFFFFFFFFu;
   std::int32_t fileio_last_result_ = 0;
+  std::uint32_t fileio_compatibility_version_ = 0u;
   std::uint32_t fileio_total_read_ = 0;
   std::array<char, 257> fileio_last_path_{};
   RpcCallTrace last_rpc_call_{};
