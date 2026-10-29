@@ -29,6 +29,11 @@ public:
   // Opt-in native IOP service replacement for the host startup experiment.
   // Does not enable a second CPU, or turn unknown RPCs into fake successes.
   void enable_native_iop_services(bool enabled);
+  // Run the actual user-supplied BIOS's R3000A IOP alongside a native EE ELF.
+  // This is a separate, opt-in mode; it never runs synthetic IOP RPC replies.
+  // Returns false when there is no loaded title or no valid 4 MiB BIOS.
+  bool enable_bios_iop_for_elf(bool enabled);
+  bool bios_iop_for_elf_enabled() const { return bios_iop_enabled_; }
   void enable_verified_ioprp_reboot(bool enabled);
   void set_native_file_backend(NativeFileBackend* backend) {
     native_iop_.set_file_backend(backend);
@@ -86,6 +91,7 @@ private:
   bool ready_ = false;
   bool bare_elf_startup_syscalls_ = false;
   bool native_iop_enabled_ = false;
+  bool bios_iop_enabled_ = false;
   bool native_ioprp_verified_ = false;
   std::uint64_t native_iop_reboot_ready_at_ = 0u;
   std::uint32_t sif_dma_last_id_ = 0u;

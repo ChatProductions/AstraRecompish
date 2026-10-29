@@ -1307,6 +1307,20 @@ std::uint32_t Memory::ee_interrupt_lines() const {
   return lines;
 }
 
+void Memory::complete_host_sif1_dma() {
+  // A bare-ELF EE kernel API supplies the DMA descriptor rather than setting
+  // the BIOS EE DMAC chain registers. Preserve the real IOP-visible completion
+  // flags and IRQ3 used by SIFCMD's DMA interrupt handler.
+  const auto set_bits = [&](std::size_t offset, std::uint32_t bits) {
+    const auto value = iop_read32(kIopHwBase + static_cast<std::uint32_t>(offset))
+                       | bits;
+    for (unsigned byte = 0u; byte < 4u; ++byte)
+      iop_hw_[offset + byte] = static_cast<std::uint8_t>(value >> (byte * 8u));
+  };
+  set_bits(0x0574u, 1u << 27u); // SIF1 DMA channel completion (DICR2).
+  set_bits(0x0070u, 1u << 3u);  // IOP DMAC interrupt (I_STAT).
+}
+
 bool Memory::iop_interrupt_pending() const {
   return iop_read32(0x1F801078u) != 0u &&
       (iop_read32(0x1F801070u) & iop_read32(0x1F801074u)) != 0u;

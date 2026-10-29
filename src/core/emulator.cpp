@@ -28,6 +28,7 @@ Emulator::Emulator()
 
 void Emulator::enable_native_iop_services(bool enabled) {
   native_iop_enabled_ = enabled && image_.ok;
+  if (native_iop_enabled_) bios_iop_enabled_ = false;
   native_ioprp_verified_ = false;
   native_iop_reboot_ready_at_ = 0u;
   sif_dma_last_id_ = 0u;
@@ -41,6 +42,24 @@ void Emulator::enable_native_iop_services(bool enabled) {
   }
 }
 
+bool Emulator::enable_bios_iop_for_elf(bool enabled) {
+  if (!enabled) {
+    bios_iop_enabled_ = false;
+    return false;
+  }
+  if (!image_.ok || !memory_.has_bios()) return false;
+  // Real R3000A firmware owns SIFCMD here; do not deliver synthetic RPCs.
+  native_iop_enabled_ = false;
+  native_ioprp_verified_ = false;
+  native_iop_reboot_ready_at_ = 0u;
+  native_iop_.reset();
+  sif_dma_last_id_ = 0u;
+  iop_.reset();
+  ee_cycles_until_iop_ = 8u; // EE/IOP hardware clock ratio.
+  bios_iop_enabled_ = true;
+  return true;
+}
+
 void Emulator::enable_verified_ioprp_reboot(bool enabled) {
   native_ioprp_verified_ = enabled && native_iop_enabled_;
   native_iop_.permit_reboot_with_verified_image(native_ioprp_verified_);
@@ -51,6 +70,7 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   gif_.reset();
   vif1_.reset();
   image_ = load_elf32(data, size, memory_);
+  iop_.reset();
   // Native title code is never inherited by the next ELF accidentally.
   cpu_.set_startup_aot_package(nullptr);
   ee_cycles_until_iop_ = 8u;
@@ -60,6 +80,7 @@ ElfLoadResult Emulator::load_elf(const void* data, std::size_t size) {
   native_iop_reboot_ready_at_ = 0u;
   native_iop_.reset();
   sif_dma_last_id_ = 0u;
+  bios_iop_enabled_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
@@ -101,6 +122,7 @@ bool Emulator::boot_bios() {
   native_iop_reboot_ready_at_ = 0u;
   native_iop_.reset();
   sif_dma_last_id_ = 0u;
+  bios_iop_enabled_ = false;
   startup_stack_top_ = startup_heap_base_ = startup_heap_end_ = 0u;
   sif_system_regs_ = {};
   deci2_last_debug_text_ = {};
@@ -174,7 +196,8 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
   std::uint32_t remaining = instructions;
   while (remaining != 0u) {
     auto budget = std::min(remaining, memory_.cycles_until_next_event());
-    if (!image_.ok) budget = std::min(budget, ee_cycles_until_iop_);
+    if (!image_.ok || bios_iop_enabled_)
+      budget = std::min(budget, ee_cycles_until_iop_);
     // A guest syscall handler returns through an EE instruction sequence.
     // Observe each instruction while one runs, so $ra is restored before
     // the original syscall wrapper executes its next instruction.
@@ -191,11 +214,14 @@ StopReason Emulator::run_slice(std::uint32_t instructions) {
       native_iop_.complete_reboot(memory_);
       native_iop_reboot_ready_at_ = 0u;
     }
-    if (!image_.ok) {
+    if (!image_.ok || bios_iop_enabled_) {
       ee_cycles_until_iop_ -= executed;
       if (ee_cycles_until_iop_ == 0u) {
-        iop_.step();
+        const auto iop_result = iop_.step();
         ee_cycles_until_iop_ = 8u;
+        // An actual IOP instruction failure is a visible stop, not HLE success.
+        if (bios_iop_enabled_ && iop_result != IopStopReason::None)
+          return StopReason::Halted;
       }
     }
     // DMA can retire inside a requested host slice. Consume its packet now,
@@ -262,11 +288,12 @@ bool Emulator::handle_bare_elf_startup_syscall() {
     return true;
   }
   case 0x76u: // sceSifDmaStat(trid): -1 means the transfer has completed.
-    if (!native_iop_enabled_) return false;
+    if (!native_iop_enabled_ && !bios_iop_enabled_) return false;
     return cpu_.retire_trapped_syscall(
         arg0 != 0u && arg0 <= sif_dma_last_id_ ? UINT64_MAX : 0u);
   case 0x77u: { // sceSifSetDma(descriptors, count): EE -> IOP SIF1 copies.
-    if (!native_iop_enabled_ || arg1 == 0u || arg1 > 8u ||
+    if ((!native_iop_enabled_ && !bios_iop_enabled_) ||
+        arg1 == 0u || arg1 > 8u ||
         (arg0 & 3u) != 0u ||
         !memory_.valid(arg0, arg1 * 16u)) return false;
     struct Transfer { std::uint32_t src, dst, size; };
@@ -291,18 +318,21 @@ bool Emulator::handle_bare_elf_startup_syscall() {
       const auto& d = transfers[i];
       for (std::uint32_t j = 0; j < d.size; ++j)
         memory_.iop_write8(d.dst + j, memory_.read8(d.src + j));
-      if (!native_iop_.receive(memory_, d.dst, d.size,
-                               sif_system_regs_[1])) return false;
-      if (native_iop_.phase() == NativeIopServices::Phase::RebootPending)
-        native_iop_reboot_ready_at_ = state.cycles + 8192u;
-      const auto sema_id = native_iop_.take_pending_signal_sema();
-      if (sema_id != 0u) {
-        if (sema_id > kernel_semaphores_.size()) return false;
-        auto& sema = kernel_semaphores_[sema_id - 1u];
-        if (!sema.in_use || sema.count >= sema.maximum) return false;
-        ++sema.count; // Native SIFRPC END response precedes EE WaitSema.
+      if (native_iop_enabled_) {
+        if (!native_iop_.receive(memory_, d.dst, d.size,
+                                 sif_system_regs_[1])) return false;
+        if (native_iop_.phase() == NativeIopServices::Phase::RebootPending)
+          native_iop_reboot_ready_at_ = state.cycles + 8192u;
+        const auto sema_id = native_iop_.take_pending_signal_sema();
+        if (sema_id != 0u) {
+          if (sema_id > kernel_semaphores_.size()) return false;
+          auto& sema = kernel_semaphores_[sema_id - 1u];
+          if (!sema.in_use || sema.count >= sema.maximum) return false;
+          ++sema.count; // Native SIFRPC END response precedes EE WaitSema.
+        }
       }
     }
+    if (bios_iop_enabled_) memory_.complete_host_sif1_dma();
     // HLE transfers complete synchronously. A real transfer ID is still
     // reported, and sceSifDmaStat can confirm its completion.
     const auto trid = ++sif_dma_last_id_;
@@ -773,6 +803,7 @@ void Emulator::reset() {
   native_iop_reboot_ready_at_ = 0u;
   sif_dma_last_id_ = 0u;
   native_iop_.reset();
+  if (bios_iop_enabled_ && image_.ok) iop_.reset();
   if (native_iop_enabled_ && image_.ok) {
     native_iop_.boot(memory_);
     native_iop_.permit_reboot_with_verified_image(native_ioprp_verified_);

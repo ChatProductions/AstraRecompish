@@ -94,6 +94,9 @@ public:
   // Pending external interrupt lines as R5900 Cause.IP bits.
   std::uint32_t ee_interrupt_lines() const;
   bool iop_interrupt_pending() const;
+  // Complete a host-managed SIF1 EE->IOP DMA with the same IOP interrupt
+  // flags set by the hardware-chain path. Used only by BIOS-backed title IOP.
+  void complete_host_sif1_dma();
   // IOP has its own physical RAM map but shares ROM and SIF hardware with EE.
   bool iop_valid(std::uint32_t address, std::size_t size = 1) const;
   std::uint8_t iop_read8(std::uint32_t address) const;

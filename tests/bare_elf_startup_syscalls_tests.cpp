@@ -1,5 +1,6 @@
 #include "ps2vita/emulator.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <cstring>
@@ -638,6 +639,76 @@ int main() {
               emulator.native_iop_services().unsupported_rpc_sid() ==
                   0x80000001u,
           "unknown IOP file service is reported without false bind success");
+
+  // A private game can run native EE code while a user-provided BIOS drives
+  // the real R3000A IOP. A synthetic firmware verifies scheduling, not retail
+  // PS2 firmware boot compatibility; no private ROM is used in this test.
+  ps2vita::Emulator bios_model;
+  require(!bios_model.enable_bios_iop_for_elf(true),
+          "BIOS IOP mode requires a loaded game ELF and a real BIOS mapping");
+  std::vector<std::uint8_t> synthetic_bios(ps2vita::Memory::kBiosSize, 0u);
+  // IOP reset vector: addiu $t0, $zero, 0x1234
+  put32(synthetic_bios, 0u, 0x24081234u);
+  require(bios_model.load_bios(synthetic_bios.data(), synthetic_bios.size()),
+          "a complete synthetic BIOS can be mapped without shipping firmware");
+  require(bios_model.load_elf(elf.data(), elf.size()).ok &&
+              bios_model.enable_bios_iop_for_elf(true),
+          "user-mapped BIOS IOP and external native EE ELF can coexist");
+  auto& bios_memory = bios_model.memory();
+  for (unsigned i = 0u; i < 32u; ++i)
+    bios_memory.write32(0x1000u + i * 4u, 0u); // EE NOP instructions.
+  require(bios_model.run_slice(8u) == ps2vita::StopReason::StepLimit &&
+              bios_model.iop().state().cycles == 1u &&
+              bios_model.iop().state().gpr[8] == 0x1234u &&
+              bios_model.iop().state().pc == 0xBFC00004u &&
+              bios_model.native_iop_services().phase() ==
+                  ps2vita::NativeIopServices::Phase::Offline,
+          "real BIOS IOP executes 1 reset instruction per 8 native EE cycles");
+
+  // The EE syscall wrapper must deliver data and a real DMA completion IRQ to
+  // BIOS SIFCMD, never consume it as a synthetic native IOP RPC call.
+  constexpr std::uint32_t kBiosDma = 0x1A00u;
+  constexpr std::uint32_t kBiosSource = 0x1B00u;
+  constexpr std::uint32_t kBiosDestination = 0x0010000u;
+  bios_memory.write32(kBiosDma, kBiosSource);
+  bios_memory.write32(kBiosDma + 4u, kBiosDestination);
+  bios_memory.write32(kBiosDma + 8u, 16u);
+  bios_memory.write32(kBiosDma + 12u, 0u);
+  bios_memory.write32(kBiosSource, 0xDECAFBADu);
+  bios_model.cpu().state().pc = 0x1000u;
+  bios_memory.write32(0x1000u, 0x0000000Cu); // EE syscall
+  bios_model.cpu().state().gpr[3] = 0x77u;   // sceSifSetDma
+  bios_model.cpu().state().gpr[4] = kBiosDma;
+  bios_model.cpu().state().gpr[5] = 1u;
+  bios_model.enable_bare_elf_startup_syscalls(true);
+  require(bios_model.run_slice(1u) == ps2vita::StopReason::StepLimit &&
+              bios_memory.iop_read32(kBiosDestination) == 0xDECAFBADu &&
+              (bios_memory.iop_read32(0x1F801070u) & (1u << 3u)) != 0u &&
+              (bios_memory.iop_read32(0x1F801574u) & (1u << 27u)) != 0u &&
+              bios_model.native_iop_services().command_count() == 0u,
+          "host SIF1 copies guest bytes and raises the IOP DMA IRQ without HLE");
+
+  bios_model.reset();
+  require(bios_model.bios_iop_for_elf_enabled() &&
+              bios_model.iop().state().pc == 0xBFC00000u,
+          "title reset preserves BIOS IOP selection and restarts its CPU");
+  require(bios_model.load_elf(elf.data(), elf.size()).ok &&
+              !bios_model.bios_iop_for_elf_enabled() &&
+              bios_model.iop().state().cycles == 0u,
+          "loading another guest ELF disarms the previous BIOS IOP");
+
+  ps2vita::Emulator bad_bios;
+  std::fill(synthetic_bios.begin(), synthetic_bios.begin() + 4u, 0xFFu);
+  require(bad_bios.load_bios(synthetic_bios.data(), synthetic_bios.size()) &&
+              bad_bios.load_elf(elf.data(), elf.size()).ok &&
+              bad_bios.enable_bios_iop_for_elf(true),
+          "invalid-instruction firmware fixture is eligible for IOP execution");
+  for (unsigned i = 0u; i < 16u; ++i)
+    bad_bios.memory().write32(0x1000u + i * 4u, 0u);
+  require(bad_bios.run_slice(8u) == ps2vita::StopReason::Halted &&
+              bad_bios.iop().stop_reason() ==
+                  ps2vita::IopStopReason::InvalidInstruction,
+          "an IOP decode failure is surfaced instead of silently succeeding");
 
   std::puts("Bare-ELF startup syscall tests passed.");
   return EXIT_SUCCESS;

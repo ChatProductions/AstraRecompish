@@ -29,7 +29,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-20261029-fileio-r7";
+constexpr const char* kBuildId = "nfsmw-aot-bios-iop-exp1";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -128,8 +128,10 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
   const auto failed = g_ioprp_summary.failed_entry_index;
   const auto* failed_name = failed < g_ioprp_summary.entries
       ? g_ioprp_summary.modules[failed].name.data() : "none";
-  char report[1536];
+  char report[2048];
   std::snprintf(report, sizeof(report),
+      "bios_iop=%u\nbios_iop_pc=%08X\nbios_iop_cycles=%llu\n"
+      "bios_iop_stop=%s\nbios_iop_fault=%08X\n"
       "ioprp_path=%s\nioprp_valid=%u\nioprp_size=%u\n"
       "ioprp_entries=%u\nioprp_bootconf=%u\nioprp_sifcmd=%u\n"
       "ioprp_cdvd=%u\nioprp_error=%s\n"
@@ -149,6 +151,11 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
       "rpc_recvbuf=%08X\nrpc_recv_size=%u\nrpc_mode=%u\n"
       "rpc_original_packet=%08X\nrpc_sema=%u\n"
       "rpc_fileio_candidate=%u\nrpc_reject_flags=%u\n",
+      emulator.bios_iop_for_elf_enabled() ? 1u : 0u,
+      emulator.iop().state().pc,
+      static_cast<unsigned long long>(emulator.iop().state().cycles),
+      ps2vita::iop_stop_reason_name(emulator.iop().stop_reason()),
+      emulator.iop().fault_instruction(),
       g_ioprp_path, g_ioprp_summary.valid ? 1u : 0u,
       g_ioprp_summary.image_size, g_ioprp_summary.entries,
       g_ioprp_summary.has_bootconf ? 1u : 0u,
@@ -624,23 +631,27 @@ int main() {
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
         if (result.ok && loaded_external) {
           inspect_external_ioprp();
-          emulator.enable_native_iop_services(true);
-          // IOPBTCONF is common but not mandatory for every IOPRP layout.
-          // Require a complete ROMDIR payload and the two native IOP service
-          // families actually needed by this experimental reboot path.
+          // A valid user-supplied BIOS selects the actual R3000A IOP.
+          // The AOT EE remains native; no Sony firmware enters the package.
+          const bool bios_iop =
+              emulator.enable_bios_iop_for_elf(emulator.memory().has_bios());
           const bool usable_ioprp = g_ioprp_summary.valid &&
                                    g_ioprp_summary.has_sifcmd &&
                                    g_ioprp_summary.has_cdvd;
-          emulator.enable_verified_ioprp_reboot(usable_ioprp);
+          if (!bios_iop) {
+            emulator.enable_native_iop_services(true);
+            emulator.enable_verified_ioprp_reboot(usable_ioprp);
+          }
           const bool enabled = emulator.cpu().set_startup_aot_package(
               &ps2vita::generated_private_game_aot_package());
           char probe[512];
           std::snprintf(probe, sizeof(probe),
               "build=%s\nprivate title AOT %s\n"
-              "native_iop=enabled\nioprp=%s\npath=%s\nentries=%u\n"
+              "bios_iop=%u\nnative_iop=%u\nioprp=%s\npath=%s\nentries=%u\n"
               "bootconf=%u\nsifcmd=%u\ncdvd=%u\n"
               "padding_missing=%u\n",
               kBuildId, enabled ? "armed" : "validation failed",
+              bios_iop ? 1u : 0u, bios_iop ? 0u : 1u,
               usable_ioprp ? "ROMDIR validated" :
               g_ioprp_summary.valid ? "required SIFCMD/CDVD module missing" :
               g_ioprp_summary.error,
@@ -653,7 +664,9 @@ int main() {
         }
 #endif
         if (result.ok) std::snprintf(message, sizeof(message), "%s / ENTRY %08X",
-            loaded_external ? "EXTERNAL ELF LOADED" : "BUILT-IN TEST LOADED", result.entry);
+            loaded_external ? (emulator.bios_iop_for_elf_enabled()
+              ? "EXTERNAL ELF / BIOS IOP" : "EXTERNAL ELF LOADED")
+              : "BUILT-IN TEST LOADED", result.entry);
         else std::snprintf(message, sizeof(message), "LOAD ERROR: %s", result.error);
       }
     }

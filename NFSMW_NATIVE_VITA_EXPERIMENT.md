@@ -6,6 +6,46 @@ files, or any saves. Private title-specific test VPKs are distributed through
 VitaTunnel-Relay; `ux0:data/ps2vita/boot.elf` is supplied independently and
 is **never** included inside these VPKs.
 
+## BIOS-backed native title boot path (source experiment, unverified on device)
+
+The native EE/AOT runner can now opt into a separately mapped, **user-owned**
+4 MiB PS2 BIOS for the IOP half of the system. This is a hybrid runtime:
+the game keeps its recompiled EE instructions, while the existing R3000A
+interpreter executes the actual BIOS's IOP firmware instructions from
+`0xBFC00000`. The IOP is scheduled at one instruction per eight EE
+instructions. The EE's bounded `sceSifSetDma` support deposits real guest
+bytes in IOP RAM and raises the IOP SIF1 DMA completion interrupt, enabling
+firmware SIFCMD to process them. An IOP instruction fault stops explicitly.
+
+On Vita, Triangle now selects this path **only when**
+`ux0:data/ps2vita/bios.bin` is a valid, user-supplied 4 MiB ROM image.
+Without that file, it retains the prior native IOP service experiment.
+The separate Circle BIOS boot remains available. The BIOS is neither bundled
+nor copied to GitHub. The game `boot.elf` and IOPRP data are unchanged.
+
+Offline replay can select the new path with
+`nfsmw_startup_replay <private boot.elf> [max_cycles] --bios-iop <private bios.bin>`.
+This mode is intentionally exclusive of `--native-iop`, `--ioprp`, and
+`--file-root`. Synthetic host tests confirm real R3000A scheduling,
+SIF1 DMA interrupt signaling, mutual exclusion from HLE RPC, explicit IOP
+fault reporting, and reset behavior. **Passing the synthetic tests is not
+evidence that NFSMW has reached a boot logo or gameplay.** Real firmware may
+expose incomplete hardware emulation or EE kernel behaviors, so there is
+no claim of an on-device title boot yet.
+
+### Why the original FILEIO 0xFF guard is insufficient
+
+OpenPS2BIOS's `src/iop/fileio.c` documents the retail-style `0xFF`
+negotiation: the eight-byte request names EE completion record slots; the
+eight-byte reply contains a four-character protocol version and a remainder
+mode. Negotiation can switch the subsequent FILEIO operations to an
+asynchronous completion-record format signaled by SIF command
+`0x80000011`. Thus a synthetic `0xFF` success alone would not complete
+FILEIO. The BIOS-backed path is intended to let the real IOP service implement
+that complete contract. The older native IOP HLE path remains explicitly
+unsupported at `0xFF` until its full protocol is implemented.
+Research source: https://github.com/TamaribaEmu/OpenPS2BIOS/blob/main/src/iop/fileio.c
+
 ## Final Vita r10 hardware log: precise FILEIO reply-size rejection
 
 The final on-device log set is Relay diagnostics `00000065-startup.bin`,

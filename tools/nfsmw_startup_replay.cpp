@@ -34,8 +34,8 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
 }
 
 int main(int argc, char** argv) {
-  if (argc < 2 || argc > 8) {
-    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop] [--ioprp <external image>] [--file-root <external directory>]\n");
+  if (argc < 2 || argc > 10) {
+    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop] [--ioprp <external image>] [--file-root <external directory>] [--bios-iop <external 4MiB bios>]\n");
     return 2;
   }
   std::uint64_t limit = 12000000u;
@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
   bool native_iop = false;
   const char* ioprp_path = nullptr;
   const char* file_root_path = nullptr;
+  const char* bios_iop_path = nullptr;
   for (int i = 2; i < argc; ++i) {
     if (std::strcmp(argv[i], "--native-iop") == 0 && !native_iop) {
       native_iop = true;
@@ -52,6 +53,9 @@ int main(int argc, char** argv) {
     } else if (std::strcmp(argv[i], "--file-root") == 0 &&
                file_root_path == nullptr && i + 1 < argc) {
       file_root_path = argv[++i];
+    } else if (std::strcmp(argv[i], "--bios-iop") == 0 &&
+               bios_iop_path == nullptr && i + 1 < argc) {
+      bios_iop_path = argv[++i];
     } else if (!limit_set && argv[i][0] != '-') {
       char* end = nullptr;
       limit = std::strtoull(argv[i], &end, 10);
@@ -73,6 +77,11 @@ int main(int argc, char** argv) {
 
   if (file_root_path && (!native_iop || *file_root_path == '\0')) {
     std::fprintf(stderr, "--file-root requires --native-iop and a directory\n");
+    return 2;
+  }
+
+  if (bios_iop_path && (native_iop || ioprp_path || file_root_path)) {
+    std::fprintf(stderr, "--bios-iop selects real firmware instead of native-iop/Ioprp/file-root\n");
     return 2;
   }
 
@@ -114,6 +123,19 @@ int main(int argc, char** argv) {
   }
   const std::vector<char> bytes(std::istreambuf_iterator<char>{file}, {});
   auto emulator = std::make_unique<ps2vita::Emulator>();
+  if (bios_iop_path) {
+    std::ifstream bios_stream(bios_iop_path, std::ios::binary);
+    if (!bios_stream) {
+      std::fprintf(stderr, "cannot open external BIOS\n");
+      return 2;
+    }
+    const std::vector<char> firmware(
+        std::istreambuf_iterator<char>{bios_stream}, {});
+    if (!emulator->load_bios(firmware.data(), firmware.size())) {
+      std::fprintf(stderr, "BIOS must be a complete 4 MiB image\n");
+      return 2;
+    }
+  }
   const auto loaded = emulator->load_elf(bytes.data(), bytes.size());
   if (!loaded.ok) {
     std::fprintf(stderr, "cannot load ELF: %s\n", loaded.error);
@@ -121,6 +143,10 @@ int main(int argc, char** argv) {
   }
   emulator->enable_bare_elf_startup_syscalls(true);
   emulator->enable_native_iop_services(native_iop);
+  if (bios_iop_path && !emulator->enable_bios_iop_for_elf(true)) {
+    std::fprintf(stderr, "cannot arm external BIOS IOP beside title ELF\n");
+    return 2;
+  }
   // No FILEIO server is registered without an explicit host file root.
   // This maps host:NFS to <root>/NFS and cdrom0: to <root>/disc;
   // neither device is mounted or populated automatically.
@@ -134,13 +160,13 @@ int main(int argc, char** argv) {
     emulator->set_native_file_backend(host_files.get());
   }
   if (ioprp_path) emulator->enable_verified_ioprp_reboot(true);
-  std::printf("replay=host-interpreter-only\nnative_iop=%u\nentry=%08X\n"
+  std::printf("replay=host-interpreter-only\nnative_iop=%u\nbios_iop=%u\nentry=%08X\n"
               "ioprp_valid=%u\nioprp_entries=%u\nioprp_padding_missing=%u\n"
               "file_root_enabled=%u\n"
               "ioprp_fileio_present=%u\n"
               "ioprp_fileio_irx_version_valid=%u\n"
               "ioprp_fileio_irx_version=%08X\n",
-              native_iop ? 1u : 0u, loaded.entry,
+              native_iop ? 1u : 0u, bios_iop_path ? 1u : 0u, loaded.entry,
               ioprp.valid ? 1u : 0u, ioprp.entries,
               ioprp.final_missing_padding, host_files ? 1u : 0u,
               ioprp.has_fileio ? 1u : 0u,
@@ -215,6 +241,10 @@ int main(int argc, char** argv) {
           emulator->native_iop_services().reboot_count(),
           emulator->native_iop_services().reboot_mode(),
           emulator->native_iop_services().reboot_arg());
+      std::printf("iop_pc=%08X\niop_stop=%s\niop_fault=%08X\n",
+                  emulator->iop().state().pc,
+                  ps2vita::iop_stop_reason_name(emulator->iop().stop_reason()),
+                  emulator->iop().fault_instruction());
       print_native_rpc_diagnostics(emulator->native_iop_services());
       return 0; // A captured stop is the desired diagnostic outcome.
     }
