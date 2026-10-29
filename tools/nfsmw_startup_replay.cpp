@@ -17,6 +17,8 @@
 // Vita log fields. Never print payload bytes or private game file contents.
 void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
   const auto& rpc = services.last_rpc_call();
+  if (rpc.fileio_candidate && rpc.function == 0xFFu)
+    std::puts("rpc_fileio_ff=version-query-candidate; reply unsupported");
   std::printf("rpc_packet_size=%u\nrpc_client=%08X\nrpc_bound_fileio_client=%08X\n"
               "rpc_server=%08X\nrpc_function=%u\nrpc_send_size=%u\n"
               "rpc_recvbuf=%08X\nrpc_recv_size=%u\nrpc_mode=%u\n"
@@ -134,10 +136,16 @@ int main(int argc, char** argv) {
   if (ioprp_path) emulator->enable_verified_ioprp_reboot(true);
   std::printf("replay=host-interpreter-only\nnative_iop=%u\nentry=%08X\n"
               "ioprp_valid=%u\nioprp_entries=%u\nioprp_padding_missing=%u\n"
-              "file_root_enabled=%u\n",
+              "file_root_enabled=%u\n"
+              "ioprp_fileio_present=%u\n"
+              "ioprp_fileio_irx_version_valid=%u\n"
+              "ioprp_fileio_irx_version=%08X\n",
               native_iop ? 1u : 0u, loaded.entry,
               ioprp.valid ? 1u : 0u, ioprp.entries,
-              ioprp.final_missing_padding, host_files ? 1u : 0u);
+              ioprp.final_missing_padding, host_files ? 1u : 0u,
+              ioprp.has_fileio ? 1u : 0u,
+              ioprp.fileio_irx_version_valid ? 1u : 0u,
+              ioprp.fileio_irx_version);
   std::uint64_t next_progress = 1000000u;
   std::uint32_t last_deci2_count = 0u;
   unsigned sifcmd_wait_samples = 0u;

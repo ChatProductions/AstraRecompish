@@ -18,6 +18,16 @@ void entry(std::vector<std::uint8_t>& bytes, std::size_t index,
   for (unsigned i = 0; i < 4u; ++i)
     bytes[offset + 12u + i] = static_cast<std::uint8_t>(size >> (i * 8u));
 }
+void put16(std::vector<std::uint8_t>& b, std::size_t at,
+           std::uint16_t v) {
+  b[at] = static_cast<std::uint8_t>(v);
+  b[at + 1u] = static_cast<std::uint8_t>(v >> 8u);
+}
+void put32(std::vector<std::uint8_t>& b, std::size_t at,
+           std::uint32_t v) {
+  for (unsigned i = 0; i < 4u; ++i)
+    b[at + i] = static_cast<std::uint8_t>(v >> (8u * i));
+}
 }
 
 int main() {
@@ -35,6 +45,58 @@ int main() {
               result.modules[5].offset == 0xA0u &&
               result.modules[5].size == 16u,
           "ROMDIR parser validates and locates known IOP service modules");
+
+
+  // Entirely synthetic FILEIO IRX, including a bounded .iopmod header.
+  std::vector<std::uint8_t> irx_image(0x140u, 0u);
+  entry(irx_image, 0u, "RESET", 0u);
+  entry(irx_image, 1u, "ROMDIR", 0x40u);
+  entry(irx_image, 2u, "FILEIO", 0x100u);
+  constexpr std::size_t kIrX = 0x40u;
+  constexpr std::size_t kSection = kIrX + 0x68u;
+  constexpr std::size_t kMetadata = kIrX + 0xA0u;
+  std::memcpy(irx_image.data() + kIrX, "\x7f""ELF", 4u);
+  irx_image[kIrX + 4u] = 1u;
+  irx_image[kIrX + 5u] = 1u;
+  irx_image[kIrX + 6u] = 1u;
+  put16(irx_image, kIrX + 16u, 0xFF80u);
+  put16(irx_image, kIrX + 18u, 8u);
+  put32(irx_image, kIrX + 32u, 0x40u);
+  put16(irx_image, kIrX + 46u, 40u);
+  put16(irx_image, kIrX + 48u, 2u);
+  put32(irx_image, kSection + 4u, 0x70000080u);
+  put32(irx_image, kSection + 16u, 0xA0u);
+  put32(irx_image, kSection + 20u, 36u);
+  put32(irx_image, kMetadata + 24u, 0x0208u);
+  std::memcpy(irx_image.data() + kMetadata + 28u, "FILEIO", 6u);
+  const auto irx = ps2vita::inspect_ioprp_image(irx_image.data(), irx_image.size());
+  require(irx.valid && irx.has_fileio && irx.fileio_irx_version_valid &&
+              irx.fileio_irx_version == 0x0208u,
+          "synthetic FILEIO .iopmod version is read without executing IOP code");
+  put32(irx_image, kSection + 16u, 0xF0u);
+  require(!ps2vita::inspect_ioprp_image(irx_image.data(), irx_image.size())
+               .fileio_irx_version_valid,
+          "out-of-bounds FILEIO .iopmod remains unknown");
+  put32(irx_image, kSection + 16u, 0xA0u);
+  irx_image[kMetadata + 28u] = 'X';
+  require(!ps2vita::inspect_ioprp_image(irx_image.data(), irx_image.size())
+               .fileio_irx_version_valid,
+          "wrong module name cannot certify FILEIO version");
+  irx_image[kMetadata + 28u] = 'F';
+  put32(irx_image, kIrX + 32u, 0u);
+  put32(irx_image, kIrX + 28u, 0x34u);
+  put16(irx_image, kIrX + 42u, 32u);
+  put16(irx_image, kIrX + 44u, 1u);
+  put32(irx_image, kIrX + 0x34u, 0x70000080u);
+  put32(irx_image, kIrX + 0x38u, 0xA0u);
+  put32(irx_image, kIrX + 0x44u, 36u);
+  require(ps2vita::inspect_ioprp_image(irx_image.data(), irx_image.size())
+               .fileio_irx_version_valid,
+          "IRX program-header .iopmod version is recognized");
+  put32(irx_image, kIrX + 0x38u, 0xFFFFu);
+  require(!ps2vita::inspect_ioprp_image(irx_image.data(), irx_image.size())
+               .fileio_irx_version_valid,
+          "invalid IRX program-header bounds cannot certify FILEIO version");
 
   // The actual IOPRP from a Vita run was an odd number of bytes. A final
   // module's data may reach EOF without containing its 16-byte padding.

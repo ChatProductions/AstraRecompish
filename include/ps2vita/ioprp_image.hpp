@@ -30,6 +30,10 @@ struct IoprpSummary {
   bool has_bootconf = false;
   bool has_sifcmd = false;
   bool has_cdvd = false;
+  bool has_fileio = false;
+  // Read-only IRX .iopmod module identity; NOT the SIFRPC 0xFF reply.
+  bool fileio_irx_version_valid = false;
+  std::uint32_t fileio_irx_version = 0u;
   std::array<IoprpEntry, kMaxEntries> modules{};
 };
 

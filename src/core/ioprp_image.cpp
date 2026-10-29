@@ -16,6 +16,54 @@ std::uint32_t word32(const std::uint8_t* bytes, std::size_t offset) {
 bool same(const IoprpEntry& entry, const char* name) {
   return std::strcmp(entry.name.data(), name) == 0;
 }
+
+std::uint16_t word16(const std::uint8_t* bytes, std::size_t offset) {
+  return std::uint16_t{bytes[offset]} |
+         (std::uint16_t{bytes[offset + 1u]} << 8u);
+}
+
+// PS2 ELF32 IRX .iopmod (SHT/PT 0x70000080) records a module version.
+// It does NOT establish the FILEIO RPC 0xFF response format or authorize
+// returning any version to guest code. Never execute private IOP modules.
+// References: PS2SDK ps2-irxgen, ps2-bios-book IOP .iopmod layout.
+bool inspect_fileio_irx_version(const std::uint8_t* data,
+                                std::size_t length,
+                                std::uint32_t& version) {
+  if (length < 52u || std::memcmp(data, "\x7f""ELF", 4u) != 0 ||
+      data[4] != 1u || data[5] != 1u || data[6] != 1u ||
+      word16(data, 16u) != 0xFF80u || word16(data, 18u) != 8u)
+    return false;
+  constexpr std::uint32_t kIopmod = 0x70000080u;
+  const auto metadata = [&](std::size_t offset, std::size_t size) -> bool {
+    if (size < 36u || offset > length || size > length - offset) return false;
+    constexpr char kName[] = "FILEIO";
+    for (unsigned i = 0; i < 6u; ++i) {
+      auto ch = data[offset + 28u + i];
+      if (ch >= 'a' && ch <= 'z') ch = static_cast<std::uint8_t>(ch - 'a' + 'A');
+      if (ch != static_cast<std::uint8_t>(kName[i])) return false;
+    }
+    if (data[offset + 34u] != 0u || data[offset + 35u] != 0u) return false;
+    version = word32(data, offset + 24u);
+    return true;
+  };
+  const auto table = [&](std::uint32_t at, std::uint16_t stride,
+                         std::uint16_t count, bool sections) -> bool {
+    const std::size_t minimum = sections ? 40u : 32u;
+    if (!at || !count || count > 512u || stride < minimum || at > length ||
+        std::uint64_t{stride} * count > length - at) return false;
+    for (std::uint32_t i = 0u; i < count; ++i) {
+      const auto entry = std::size_t{at} + std::size_t{i} * stride;
+      if (word32(data, entry + (sections ? 4u : 0u)) != kIopmod) continue;
+      if (metadata(word32(data, entry + (sections ? 16u : 4u)),
+                   word32(data, entry + (sections ? 20u : 16u)))) return true;
+    }
+    return false;
+  };
+  return table(word32(data, 32u), word16(data, 46u),
+               word16(data, 48u), true) ||
+         table(word32(data, 28u), word16(data, 42u),
+               word16(data, 44u), false);
+}
 } // namespace
 
 IoprpSummary inspect_ioprp_image(const void* image, std::size_t length) {
@@ -56,6 +104,7 @@ IoprpSummary inspect_ioprp_image(const void* image, std::size_t length) {
     ++result.entries;
     if (same(entry, "IOPBTCONF")) result.has_bootconf = true;
     if (same(entry, "SIFCMD")) result.has_sifcmd = true;
+    if (same(entry, "FILEIO")) result.has_fileio = true;
     if (same(entry, "CDVDMAN") || same(entry, "CDVDFSV"))
       result.has_cdvd = true;
   }
@@ -98,6 +147,9 @@ IoprpSummary inspect_ioprp_image(const void* image, std::size_t length) {
       result.final_missing_padding =
           static_cast<std::uint32_t>(aligned_end - length);
     }
+    if (same(entry, "FILEIO"))
+      result.fileio_irx_version_valid = inspect_fileio_irx_version(
+          bytes + entry.offset, entry.size, result.fileio_irx_version);
     module_offset = aligned_end;
     if (i + 1u == result.entries) {
       result.final_payload_end = static_cast<std::uint32_t>(actual_end);
