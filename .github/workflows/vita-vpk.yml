@@ -24,12 +24,136 @@ jobs:
       - name: Configure native host tests
         run: cmake -S . -B build-host -DCMAKE_BUILD_TYPE=Release
       - name: Compile CPU differential tests
-        run: cmake --build build-host --parallel 2 --target ps2core_tests bare_elf_startup_syscalls_tests native_iop_services_tests ioprp_image_tests
+        run: cmake --build build-host --parallel 2 --target ps2core_tests bare_elf_startup_syscalls_tests native_iop_services_tests ioprp_image_tests nfsmw_startup_replay
       - name: Run CPU and translator regression tests
         run: ctest --test-dir build-host --output-on-failure -R '^(ps2core_tests|bare_elf_startup_syscalls_tests|native_iop_services_tests|ioprp_image_tests|astrair_builder_tests)$'
 
       - name: Generate freely redistributable guest-code fixture
         run: PYTHONDONTWRITEBYTECODE=1 python3 -B tools/make_smoke_elf.py /tmp/astrarecomp-private-aot-smoke.elf
+      - name: Smoke-test typed host replay diagnostics without private game assets
+        run: |
+          build-host/nfsmw_startup_replay /tmp/astrarecomp-private-aot-smoke.elf 100000 --native-iop > /tmp/nfsmw-host-replay.txt
+          grep -q '^replay=host-interpreter-only        run: cmake -S . -B build-private-aot -DCMAKE_BUILD_TYPE=Release -DASTRART_GAME_ELF=/tmp/astrarecomp-private-aot-smoke.elf
+      - name: Compile independently generated title-code package
+        run: cmake --build build-private-aot --parallel 2 --target private_game_aot_probe
+      - name: Compare linked native title code against guest interpreter
+        run: ctest --test-dir build-private-aot --output-on-failure -R '^private_game_aot_probe$'
+
+  vita-vpk:
+    needs: host-tests
+    name: VitaSDK VPK
+    runs-on: ubuntu-24.04
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Configure VitaSDK build
+        run: |
+          cmake -S . -B build-vita \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+      - name: Compile native Vita VPK
+        run: cmake --build build-vita --parallel 2
+      - name: Upload installable VPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraRecomp-Vita-VPK
+          path: build-vita/ps2vita.vpk
+          if-no-files-found: error
+          retention-days: 14
+ /tmp/nfsmw-host-replay.txt
+          grep -q '^reason=' /tmp/nfsmw-host-replay.txt
+          grep -q '^rpc_client=00000000        run: cmake -S . -B build-private-aot -DCMAKE_BUILD_TYPE=Release -DASTRART_GAME_ELF=/tmp/astrarecomp-private-aot-smoke.elf
+      - name: Compile independently generated title-code package
+        run: cmake --build build-private-aot --parallel 2 --target private_game_aot_probe
+      - name: Compare linked native title code against guest interpreter
+        run: ctest --test-dir build-private-aot --output-on-failure -R '^private_game_aot_probe$'
+
+  vita-vpk:
+    needs: host-tests
+    name: VitaSDK VPK
+    runs-on: ubuntu-24.04
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Configure VitaSDK build
+        run: |
+          cmake -S . -B build-vita \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+      - name: Compile native Vita VPK
+        run: cmake --build build-vita --parallel 2
+      - name: Upload installable VPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraRecomp-Vita-VPK
+          path: build-vita/ps2vita.vpk
+          if-no-files-found: error
+          retention-days: 14
+ /tmp/nfsmw-host-replay.txt
+          grep -q '^rpc_reject_flags=0        run: cmake -S . -B build-private-aot -DCMAKE_BUILD_TYPE=Release -DASTRART_GAME_ELF=/tmp/astrarecomp-private-aot-smoke.elf
+      - name: Compile independently generated title-code package
+        run: cmake --build build-private-aot --parallel 2 --target private_game_aot_probe
+      - name: Compare linked native title code against guest interpreter
+        run: ctest --test-dir build-private-aot --output-on-failure -R '^private_game_aot_probe$'
+
+  vita-vpk:
+    needs: host-tests
+    name: VitaSDK VPK
+    runs-on: ubuntu-24.04
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Configure VitaSDK build
+        run: |
+          cmake -S . -B build-vita \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+      - name: Compile native Vita VPK
+        run: cmake --build build-vita --parallel 2
+      - name: Upload installable VPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraRecomp-Vita-VPK
+          path: build-vita/ps2vita.vpk
+          if-no-files-found: error
+          retention-days: 14
+ /tmp/nfsmw-host-replay.txt
+          grep -q '^fileio_calls=0        run: cmake -S . -B build-private-aot -DCMAKE_BUILD_TYPE=Release -DASTRART_GAME_ELF=/tmp/astrarecomp-private-aot-smoke.elf
+      - name: Compile independently generated title-code package
+        run: cmake --build build-private-aot --parallel 2 --target private_game_aot_probe
+      - name: Compare linked native title code against guest interpreter
+        run: ctest --test-dir build-private-aot --output-on-failure -R '^private_game_aot_probe$'
+
+  vita-vpk:
+    needs: host-tests
+    name: VitaSDK VPK
+    runs-on: ubuntu-24.04
+    container:
+      image: vitasdk/vitasdk:2026.08
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Configure VitaSDK build
+        run: |
+          cmake -S . -B build-vita \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake"
+      - name: Compile native Vita VPK
+        run: cmake --build build-vita --parallel 2
+      - name: Upload installable VPK
+        uses: actions/upload-artifact@v4
+        with:
+          name: AstraRecomp-Vita-VPK
+          path: build-vita/ps2vita.vpk
+          if-no-files-found: error
+          retention-days: 14
+ /tmp/nfsmw-host-replay.txt
       - name: Configure private-title native code linkage
         run: cmake -S . -B build-private-aot -DCMAKE_BUILD_TYPE=Release -DASTRART_GAME_ELF=/tmp/astrarecomp-private-aot-smoke.elf
       - name: Compile independently generated title-code package
