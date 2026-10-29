@@ -415,6 +415,35 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
     if (bound_fileio_client_ != 0u &&
         (client == bound_fileio_client_ || server == kFileioServerHandle)) {
       last_rpc_call_.fileio_candidate = 1u;
+      // Observe only the shape of the unknown retail OPEN payload. A
+      // printable, NUL-terminated run containing a path separator or colon
+      // is merely a candidate; do not decode flags or execute the request.
+      // No private strings, byte hashes, or raw guest bytes leave the core.
+      if (rpc_number == 0u && send_size == 1048u &&
+          memory.iop_valid(kFileioServerBuffer, send_size)) {
+        for (std::uint32_t offset = 0; offset < send_size;) {
+          const auto first = offset;
+          bool pathlike = false;
+          while (offset < send_size) {
+            const auto ch = memory.iop_read8(kFileioServerBuffer + offset);
+            if (ch < 0x20u || ch > 0x7Eu) break;
+            if (ch == ':' || ch == '/' || ch == '\\') pathlike = true;
+            ++offset;
+          }
+          const auto length = offset - first;
+          if (length >= 4u && length <= 256u && pathlike &&
+              offset < send_size &&
+              memory.iop_read8(kFileioServerBuffer + offset) == 0u) {
+            ++last_rpc_call_.fileio_open_pathlike_count;
+            if (last_rpc_call_.fileio_open_first_pathlike_offset ==
+                0xFFFFFFFFu) {
+              last_rpc_call_.fileio_open_first_pathlike_offset = first;
+              last_rpc_call_.fileio_open_first_pathlike_length = length;
+            }
+          }
+          if (offset < send_size) ++offset;
+        }
+      }
       if (dma_pending) {
         last_rpc_call_.fileio_dma_source = dma_source;
         last_rpc_call_.fileio_dma_size = dma_size;
