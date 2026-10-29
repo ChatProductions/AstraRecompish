@@ -6,6 +6,38 @@ files, or any saves. Private title-specific test VPKs are distributed through
 VitaTunnel-Relay; `ux0:data/ps2vita/boot.elf` is supplied independently and
 is **never** included inside these VPKs.
 
+## Final Vita r10 hardware log: precise FILEIO reply-size rejection
+
+The final on-device log set is Relay diagnostics `00000065-startup.bin`,
+`00000066-fault.bin`, and `00000067-progress.bin`. The r10 build marker
+`nfsmw-aot-20261029-trace-r10` confirms the actual rejection hook executed.
+The captured FILEIO RPC has server handle `0x001E3000`, a bound FILEIO client
+at `0x005D0DC0`, RPC mode `1`, semaphore `14`, and an **8-byte reply
+buffer**. The original binary's outer FILEIO guard requires exactly 4 bytes
+and branches to error before a file-operation handler is invoked. Execution
+therefore remains at guest PC `0x004958E4`, 6,871,312 guest cycles, eleven
+SIF packets, and zero FILEIO calls. In r10's repurposed telemetry,
+`native_iop_unknown_cid=0000000E` is the semaphore ID, **not** a client
+pointer: the register was reused before the hook. The source review and
+binary disassembly establish the actual size rejection.
+
+The `nfsmw-ps2-startup-aot` source branch now accepts exactly 4- or 8-byte
+FILEIO RPC replies, validates the entire caller buffer, writes the actual
+signed operation result in the first word, and zeroes the second word for
+8-byte requests. Unsupported functions and malformed lengths remain
+explicit failures. Host regression tests cover 8-byte reply success, zero
+padding, and rejection of a 6-byte response. This is a **source-level
+compatibility fix**, not yet a physical-Vita gameplay success.
+
+**No further hardware diagnostic cycle is scheduled.** The r10 logs are
+the final on-device evidence for this iteration. The public AstraRecomp CI builds a generic
+`PS2VITA01` VPK with a smoke fixture; it does not contain the user's
+private title-specific AOT translation. The published Relay r10 VPK still
+has the previous 4-byte restriction, so a source-only change does not
+magically update it. A rebuilt private-title executable or a carefully
+validated equivalent binary change would be required to test the fix on
+hardware. No game disc is mounted, and no playable NFS MW build is claimed.
+
 ## VitaTunnel r7: real, read-only FILEIO RPC operations
 
 The r6 Vita fault report reached SIFRPC bind for server `0x80000001`
