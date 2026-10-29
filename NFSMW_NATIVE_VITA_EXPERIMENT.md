@@ -6,6 +6,34 @@ files, or any saves. Private title-specific test VPKs are distributed through
 VitaTunnel-Relay; `ux0:data/ps2vita/boot.elf` is supplied independently and
 is **never** included inside these VPKs.
 
+## VitaTunnel r7: real, read-only FILEIO RPC operations
+
+The r6 Vita fault report reached SIFRPC bind for server `0x80000001`
+(FILEIO) after one accepted IOP restart, ten SIFCMD packets, and two CDVD
+initializations. Title AOT telemetry confirmed 1,258,988 native function
+calls and 3,805,341 translated guest instructions by that stop. This is
+partial title execution, not evidence of a fully recompiled game.
+
+r7 adds a **file-backed** PS2SDK FILEIO server to the native IOP service
+model. Its RPC open(0), close(1), read(2), and lseek(4) calls use an explicit
+platform backend, tracked descriptors, bounded EE destination buffers,
+the original PS2 FILEIO argument layouts, and real error/EOF results.
+Write(3) returns a read-only filesystem error. Unsupported FILEIO functions
+still stop instead of being silently acknowledged.
+
+The Vita backend confines paths to two **external, user-controlled** roots:
+
+- `host:NFS\\...` maps to `ux0:data/ps2vita/NFS/...`.
+- `cdrom0:\\...` maps to `ux0:data/ps2vita/disc/...` (if the user has
+  independently placed their own PS2 disc files there).
+
+It rejects traversal, unknown devices, and file creation/overwrite. Missing
+files return real errors. This change does not mount an ISO, decode the PS2
+filesystem, execute actual IOP IRX modules, or bundle proprietary files.
+Logs show FILEIO binds, requests, last operation/return code, read totals,
+and last requested PS2 path. The existing `boot.elf` and
+`IOPRP280.IMG` are never modified or repackaged.
+
 ## VitaTunnel r6: full ROMDIR validation, restart gating, AOT counters
 
 The r5 physical-Vita logs verified that the existing image was found at

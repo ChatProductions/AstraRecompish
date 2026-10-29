@@ -30,6 +30,9 @@ public:
   // Does not enable a second CPU, or turn unknown RPCs into fake successes.
   void enable_native_iop_services(bool enabled);
   void enable_verified_ioprp_reboot(bool enabled);
+  void set_native_file_backend(NativeFileBackend* backend) {
+    native_iop_.set_file_backend(backend);
+  }
   const NativeIopServices& native_iop_services() const { return native_iop_; }
   void service_graphics();
   void reset();

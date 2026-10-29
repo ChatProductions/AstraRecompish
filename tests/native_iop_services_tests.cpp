@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
 namespace {
 void require(bool ok, const char* description) {
@@ -19,6 +20,42 @@ void packet(ps2vita::Memory& memory, std::uint32_t cid,
   memory.iop_write32(p + 12, opt);
   memory.iop_write32(p + 16, arg);
 }
+
+class TestFiles final : public ps2vita::NativeFileBackend {
+public:
+  int open(const char* path, std::uint32_t) override {
+    if (std::strcmp(path, "host:NFS\\TEST.BIN") != 0) return -2;
+    position = 0;
+    ++opens;
+    return 42;
+  }
+  int close(int fd) override {
+    if (fd != 42) return -9;
+    ++closes;
+    return 0;
+  }
+  int read(int fd, void* out, std::uint32_t count) override {
+    if (fd != 42) return -9;
+    static constexpr char data[] = "FILEIO";
+    const auto rest = position < sizeof(data) - 1u ?
+        static_cast<std::uint32_t>(sizeof(data) - 1u - position) : 0u;
+    const auto n = rest < count ? rest : count;
+    std::memcpy(out, data + position, n);
+    position += n;
+    return static_cast<int>(n);
+  }
+  int seek(int fd, std::int32_t offset, std::uint32_t whence) override {
+    if (fd != 42) return -9;
+    std::int32_t base = whence == 0u ? 0 : whence == 1u ?
+        static_cast<std::int32_t>(position) : 6;
+    if (base + offset < 0 || base + offset > 6) return -22;
+    position = static_cast<std::uint32_t>(base + offset);
+    return static_cast<int>(position);
+  }
+  std::uint32_t position = 0;
+  int opens = 0;
+  int closes = 0;
+};
 } // namespace
 
 int main() {
@@ -163,6 +200,94 @@ int main() {
               services.reboot_completed() == 1u &&
               (memory.read32(kSmFlagEe) & 0x70000u) == 0x70000u,
           "verified IOPRP enables a bounded native IOP service restart");
+
+  // FILEIO service after a completed reboot. The host mock supplies actual
+  // bytes; no game asset is invented or embedded in the native implementation.
+  TestFiles files;
+  services.set_file_backend(&files);
+  packet(memory, 0x80000002u, 0u, kEeReceive, 20u);
+  require(services.receive(memory, kReceiver, 20u, kCmdDataEe),
+          "post-reboot SIFCMD accepts EE receiver");
+  packet(memory, 0x80000002u, 1u, 0u, 16u);
+  require(services.receive(memory, kReceiver, 16u, kCmdDataEe),
+          "post-reboot SIFRPC reaches ready state");
+  memory.write32(kOriginalPacket + 16u, 5u);
+  packet(memory, 0x80000009u, 0u, 0u, 64u);
+  memory.iop_write32(kReceiver + 20u, kOriginalPacket);
+  memory.iop_write32(kReceiver + 28u, kClient);
+  memory.iop_write32(kReceiver + 32u, 0x80000001u);
+  require(services.receive(memory, kReceiver, 64u, kCmdDataEe) &&
+              memory.read32(kClient + 36u) == 0x001E3000u &&
+              memory.read32(kClient + 20u) == 0x001E4000u &&
+              services.fileio_bind_count() == 1u,
+          "FILEIO RPC binds only with an installed native backend");
+  services.take_pending_signal_sema();
+
+  constexpr std::uint32_t kFileBuf = 0x001E4000u;
+  constexpr std::uint32_t kDestination = 0x5A01u; // deliberately unaligned
+  constexpr std::uint32_t kCompletion = 0x5B00u;
+  const auto file_call = [&](std::uint32_t function, std::uint32_t size) {
+    memory.write32(kOriginalPacket + 16u, 5u);
+    packet(memory, 0x8000000Au, 0u, 0u, 64u);
+    memory.iop_write32(kReceiver + 20u, kOriginalPacket);
+    memory.iop_write32(kReceiver + 28u, kClient);
+    memory.iop_write32(kReceiver + 32u, function);
+    memory.iop_write32(kReceiver + 36u, size);
+    memory.iop_write32(kReceiver + 40u, kResult);
+    memory.iop_write32(kReceiver + 44u, 4u);
+    memory.iop_write32(kReceiver + 48u, 1u);
+    memory.iop_write32(kReceiver + 52u, 0x001E3000u);
+    return services.receive(memory, kReceiver, 64u, kCmdDataEe);
+  };
+  constexpr char kName[] = "host:NFS\\TEST.BIN";
+  memory.iop_write32(kFileBuf, 1u); // FIO_O_RDONLY
+  for (unsigned i = 0; i < sizeof(kName); ++i)
+    memory.iop_write8(kFileBuf + 4u + i,
+                      static_cast<std::uint8_t>(kName[i]));
+  require(file_call(0u, 272u) && memory.read32(kResult) == 3u &&
+              files.opens == 1 && services.fileio_request_count() == 1u,
+          "FILEIO open returns a tracked guest descriptor for real file");
+  services.take_pending_signal_sema();
+
+  memory.iop_write32(kFileBuf, 3u);
+  memory.iop_write32(kFileBuf + 4u, kDestination);
+  memory.iop_write32(kFileBuf + 8u, 6u);
+  memory.iop_write32(kFileBuf + 12u, kCompletion);
+  memory.write32(kCompletion, 0xFFFFFFFFu);
+  require(file_call(2u, 16u) && memory.read32(kResult) == 6u &&
+              memory.read8(kDestination) == 'F' &&
+              memory.read8(kDestination + 5u) == 'O' &&
+              memory.read32(kCompletion) == 0u &&
+              services.fileio_total_read() == 6u,
+          "FILEIO read transfers actual unaligned bytes and clears callback fragments");
+  services.take_pending_signal_sema();
+  require(file_call(2u, 16u) && memory.read32(kResult) == 0u,
+          "FILEIO read reports real EOF");
+  services.take_pending_signal_sema();
+
+  memory.iop_write32(kFileBuf, 3u);
+  memory.iop_write32(kFileBuf + 4u, 2u);
+  memory.iop_write32(kFileBuf + 8u, 0u);
+  require(file_call(4u, 12u) && memory.read32(kResult) == 2u,
+          "FILEIO seek uses the backend offset");
+  services.take_pending_signal_sema();
+  memory.iop_write32(kFileBuf, 3u);
+  require(file_call(1u, 4u) && memory.read32(kResult) == 0u &&
+              files.closes == 1,
+          "FILEIO close releases the tracked descriptor");
+  services.take_pending_signal_sema();
+
+  memory.iop_write32(kFileBuf, 3u);
+  require(file_call(1u, 4u) &&
+              static_cast<std::int32_t>(memory.read32(kResult)) == -9,
+          "FILEIO rejects already-closed guest descriptors");
+  services.take_pending_signal_sema();
+  require(!file_call(12u, 4u) && services.fileio_last_function() == 12u,
+          "unsupported FILEIO operations remain explicit fault boundaries");
+
+  services.reset();
+  require(services.fileio_request_count() == 0u && files.closes == 1,
+          "service reset clears FILEIO diagnostics without double-closing");
   std::puts("Native IOP service handshake tests passed.");
   return 0;
 }

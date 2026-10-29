@@ -29,7 +29,7 @@ constexpr const char* kFaultPath = "ux0:data/ps2vita/fault.txt";
 constexpr const char* kProgressPath = "ux0:data/ps2vita/progress.txt";
 constexpr const char* kBenchmarkPath = "ux0:data/ps2vita/benchmark.txt";
 #if defined(PS2VITA_PRIVATE_GAME_AOT)
-constexpr const char* kBuildId = "nfsmw-aot-20261029-romdir-r6";
+constexpr const char* kBuildId = "nfsmw-aot-20261029-fileio-r7";
 #else
 constexpr const char* kBuildId = "generic-ps2vita-monitor";
 #endif
@@ -41,12 +41,94 @@ constexpr ps2vita::ExecutionBudget kFrameExecution{8000u, 2000u, 1024u};
 ps2vita::IoprpSummary g_ioprp_summary{};
 const char* g_ioprp_path = "not found";
 
+bool prefix_equal(const char* path, const char* prefix) {
+  while (*prefix) {
+    char a = *path++;
+    char b = *prefix++;
+    if (a >= 'a' && a <= 'z') a = static_cast<char>(a - 'a' + 'A');
+    if (b >= 'a' && b <= 'z') b = static_cast<char>(b - 'a' + 'A');
+    if (a != b) return false;
+  }
+  return true;
+}
+
+// Read-only PS2 FILEIO namespace. Disc files belong under the user's private
+// ux0:data/ps2vita/disc folder; the already installed host:NFS image remains
+// under ux0:data/ps2vita/NFS. No path can traverse outside those two roots.
+class VitaNativeFileBackend final : public ps2vita::NativeFileBackend {
+public:
+  int open(const char* path, std::uint32_t flags) override {
+    if (!path || (flags & 3u) > 1u ||
+        (flags & (0x0100u | 0x0200u | 0x0400u | 0x0800u)))
+      return -30;
+    const char* root = nullptr;
+    const char* suffix = nullptr;
+    if (prefix_equal(path, "host:NFS\\") ||
+        prefix_equal(path, "host:NFS/")) {
+      root = "ux0:data/ps2vita/NFS/";
+      suffix = path + 9u;
+    } else if (prefix_equal(path, "cdrom0:")) {
+      root = "ux0:data/ps2vita/disc/";
+      suffix = path + 7u;
+    } else if (prefix_equal(path, "cdrom:")) {
+      root = "ux0:data/ps2vita/disc/";
+      suffix = path + 6u;
+    } else return -2; // No executable PS2 CD/ROM mount is invented.
+    while (*suffix == '/' || *suffix == '\\') ++suffix;
+    char relative[257]{};
+    std::size_t used = 0u;
+    std::size_t segment = 0u;
+    for (const char* cursor = suffix; *cursor; ++cursor) {
+      const char c = *cursor == '\\' ? '/' : *cursor;
+      if (c == '/') {
+        if (used == segment || (used - segment == 1u &&
+                                 relative[segment] == '.') ||
+            (used - segment == 2u && relative[segment] == '.' &&
+             relative[segment + 1u] == '.')) return -13;
+        if (used >= 255u) return -36;
+        relative[used++] = '/';
+        segment = used;
+      } else {
+        if (static_cast<unsigned char>(c) < 0x20u || c == ':' ||
+            used >= 255u) return -13;
+        relative[used++] = c;
+      }
+    }
+    if (used == 0u || used == segment || (used - segment == 1u &&
+        relative[segment] == '.') || (used - segment == 2u &&
+        relative[segment] == '.' && relative[segment + 1u] == '.'))
+      return -13;
+    // ISO 9660 file names often carry the revision suffix ;1.
+    if (used >= 2u && relative[used - 2u] == ';' &&
+        relative[used - 1u] == '1') relative[used - 2u] = '\0';
+    char vita_path[384];
+    if (std::snprintf(vita_path, sizeof(vita_path), "%s%s", root,
+                      relative) >= static_cast<int>(sizeof(vita_path)))
+      return -36;
+    const auto fd = sceIoOpen(vita_path, SCE_O_RDONLY, 0);
+    return fd < 0 ? -2 : fd; // Missing external assets are genuine ENOENT.
+  }
+  int close(int fd) override {
+    return sceIoClose(fd) < 0 ? -5 : 0;
+  }
+  int read(int fd, void* buffer, std::uint32_t size) override {
+    const auto n = sceIoRead(fd, buffer, size);
+    return n < 0 ? -5 : n;
+  }
+  int seek(int fd, std::int32_t offset, std::uint32_t whence) override {
+    if (whence > 2u) return -22;
+    const auto position = sceIoLseek(fd, offset, static_cast<int>(whence));
+    return position < 0 ? -5 :
+           position > 0x7FFFFFFF ? -75 : static_cast<int>(position);
+  }
+};
+
 void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
   const auto& iop = emulator.native_iop_services();
   const auto failed = g_ioprp_summary.failed_entry_index;
   const auto* failed_name = failed < g_ioprp_summary.entries
       ? g_ioprp_summary.modules[failed].name.data() : "none";
-  char report[1024];
+  char report[1536];
   std::snprintf(report, sizeof(report),
       "ioprp_path=%s\nioprp_valid=%u\nioprp_size=%u\n"
       "ioprp_entries=%u\nioprp_bootconf=%u\nioprp_sifcmd=%u\n"
@@ -59,7 +141,9 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
       "native_iop_unknown_cid=%08X\nnative_iop_unknown_sid=%08X\n"
       "native_cdvd_init_calls=%u\nnative_iop_reboot_requests=%u\n"
       "native_iop_reboot_completed=%u\nnative_iop_reboot_mode=%u\n"
-      "native_iop_reboot_arg=%s\n",
+      "native_iop_reboot_arg=%s\n"
+      "fileio_binds=%u\nfileio_calls=%u\nfileio_last_fno=%u\n"
+      "fileio_last_result=%d\nfileio_bytes_read=%u\nfileio_last_path=%s\n",
       g_ioprp_path, g_ioprp_summary.valid ? 1u : 0u,
       g_ioprp_summary.image_size, g_ioprp_summary.entries,
       g_ioprp_summary.has_bootconf ? 1u : 0u,
@@ -74,7 +158,10 @@ void write_iop_diagnostic(int fd, const ps2vita::Emulator& emulator) {
       static_cast<unsigned>(iop.phase()), iop.command_count(),
       iop.unsupported_cid(), iop.unsupported_rpc_sid(),
       iop.cdvd_init_calls(), iop.reboot_count(), iop.reboot_completed(),
-      iop.reboot_mode(), iop.reboot_arg());
+      iop.reboot_mode(), iop.reboot_arg(),
+      iop.fileio_bind_count(), iop.fileio_request_count(),
+      iop.fileio_last_function(), iop.fileio_last_result(),
+      iop.fileio_total_read(), iop.fileio_last_path());
   sceIoWrite(fd, report, std::strlen(report));
   // Metadata only: no game code, bytes, or file contents leave the Vita.
   // Full per-entry details pinpoint problems that could otherwise require
@@ -433,7 +520,9 @@ int main() {
   write_probe("screen ready\n");
   sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
 
+  VitaNativeFileBackend game_files;
   ps2vita::Emulator emulator;
+  emulator.set_native_file_backend(&game_files);
   const auto aot_probe = ps2vita::run_phase0_aot_probe();
   const auto aot_chain_probe = ps2vita::run_phase0_aot_chain_probe();
   // Keep the first UI frame independent of the expensive interpreter-vs-AOT
