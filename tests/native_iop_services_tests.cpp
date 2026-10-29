@@ -254,11 +254,21 @@ int main() {
               services.last_rpc_call().server == 0x001E3000u &&
               services.last_rpc_call().bound_fileio_client == kClient,
           "successful FILEIO call captures the real RPC fields");
-  require(!file_call(1u, 4u, 0u) &&
+  require(!file_call(1u, 4u, 2u) &&
               (services.last_rpc_call().reject_flags & 8u) != 0u &&
-              services.last_rpc_call().mode == 0u &&
+              services.last_rpc_call().mode == 2u &&
               services.fileio_request_count() == 1u && files.closes == 0,
-          "invalid FILEIO RPC mode is diagnosed without closing a file");
+          "unsupported FILEIO RPC mode is diagnosed without closing a file");
+  // Standard blocking SIF RPC is mode 0, and must work for real file I/O.
+  memory.iop_write32(kFileBuf, 3u);
+  memory.iop_write32(kFileBuf + 4u, 0u);
+  memory.iop_write32(kFileBuf + 8u, 1u);
+  require(file_call(4u, 12u, 0u) && memory.read32(kResult) == 0u &&
+              services.last_rpc_call().reject_flags == 0u &&
+              services.last_rpc_call().mode == 0u &&
+              services.fileio_request_count() == 2u,
+          "blocking FILEIO RPC seek succeeds without bypassing validation");
+  services.take_pending_signal_sema();
 
   memory.iop_write32(kFileBuf, 3u);
   memory.iop_write32(kFileBuf + 4u, kDestination);

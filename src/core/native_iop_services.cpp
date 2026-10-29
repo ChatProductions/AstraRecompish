@@ -378,7 +378,7 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
           (client != bound_fileio_client_ ? 1u : 0u) |
           (server != kFileioServerHandle ? 2u : 0u) |
           (recv_size != 4u ? 4u : 0u) |
-          (mode != 1u ? 8u : 0u) |
+          (mode > 1u ? 8u : 0u) |
           (!ee_pointer_valid(memory, original_pkt, 28u) ? 16u : 0u) |
           (last_rpc_call_.sema == 0u || last_rpc_call_.sema > 64u ? 32u : 0u) |
           (!client_valid ? 64u : 0u);
@@ -391,7 +391,9 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
         return false;
       }
       const auto sema = last_rpc_call_.sema;
-      if (recv_size != 4u || mode != 1u ||
+      // SIF RPC rmode is 0 for blocking calls and 1 for NOWAIT.
+      // Both are valid; retain all other FILEIO validation.
+      if (recv_size != 4u || mode > 1u ||
           !ee_pointer_valid(memory, original_pkt, 28u) ||
           sema == 0u || sema > 64u ||
           !execute_fileio(memory, rpc_number, send_size,
