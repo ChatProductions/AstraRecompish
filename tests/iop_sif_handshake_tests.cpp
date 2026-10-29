@@ -1,4 +1,5 @@
 #include "ps2vita/memory.hpp"
+#include "ps2vita/iop_cpu.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -61,10 +62,40 @@ void test_sif_bus() {
         "Reset clears stale IOP-to-EE handshake flags");
 }
 
+// Exercise the same SBUS path through executed R3000A instructions, not
+// just direct host Memory calls. All instructions are synthetic and public.
+void test_guest_executed_sif_handshake() {
+  ps2vita::Memory memory;
+  ps2vita::IopCpu cpu(memory);
+  constexpr std::uint32_t program[] = {
+      0x3C081D00u, // lui   t0, 0x1D00
+      0x35080030u, // ori   t0, t0, 0x0030 (IOP SMFLAG)
+      0x24090002u, // addiu t1, zero, 2
+      0xA5090002u, // sh    t1, 2(t0) (set SMFLAG bit 17)
+      0x3C0A1D00u, // lui   t2, 0x1D00
+      0x8D4B0040u, // lw    t3, 0x40(t2) (IOP SBUS control)
+      0x00000000u, // nop: commit the R3000A delayed load
+  };
+  for (std::uint32_t i = 0; i < sizeof(program) / sizeof(program[0]); ++i)
+    memory.iop_write32(i * 4u, program[i]);
+  cpu.state().pc = 0u;
+  check(cpu.run(7u) == ps2vita::IopStopReason::None,
+        "Synthetic IOP SIF handshake executes without CPU faults");
+  check(cpu.state().pc == 28u && cpu.state().cycles == 7u,
+        "Synthetic IOP SIF handshake executes exactly seven instructions");
+  check(memory.read32(0x1000F230u) == 0x00020000u,
+        "Guest SH to IOP SMFLAG signals EE SIFCMD initialization");
+  check(cpu.state().gpr[11] == 0xF0000002u,
+        "Guest LW observes IOP-specific SBUS status after load delay");
+  check(memory.read32(0x1000F240u) == 0xF0000102u,
+        "Guest IOP MMIO reads do not replace the EE SBUS status view");
+}
+
 } // namespace
 
 int main() {
   test_sif_bus();
+  test_guest_executed_sif_handshake();
   std::printf("IOP SIF hardware handshake: %u checks, %u failures\n",
               checks, failures);
   return failures == 0u ? 0 : 1;
