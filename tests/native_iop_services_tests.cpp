@@ -227,7 +227,8 @@ int main() {
   constexpr std::uint32_t kDestination = 0x5A01u; // deliberately unaligned
   constexpr std::uint32_t kCompletion = 0x5B00u;
   const auto file_call = [&](std::uint32_t function, std::uint32_t size,
-                             std::uint32_t mode = 1u) {
+                             std::uint32_t mode = 1u,
+                             std::uint32_t reply_size = 4u) {
     memory.write32(kOriginalPacket + 16u, 5u);
     packet(memory, 0x8000000Au, 0u, 0u, 64u);
     memory.iop_write32(kReceiver + 20u, kOriginalPacket);
@@ -235,7 +236,7 @@ int main() {
     memory.iop_write32(kReceiver + 32u, function);
     memory.iop_write32(kReceiver + 36u, size);
     memory.iop_write32(kReceiver + 40u, kResult);
-    memory.iop_write32(kReceiver + 44u, 4u);
+    memory.iop_write32(kReceiver + 44u, reply_size);
     memory.iop_write32(kReceiver + 48u, mode);
     memory.iop_write32(kReceiver + 52u, 0x001E3000u);
     return services.receive(memory, kReceiver, 64u, kCmdDataEe);
@@ -269,6 +270,20 @@ int main() {
               services.fileio_request_count() == 2u,
           "blocking FILEIO RPC seek succeeds without bypassing validation");
   services.take_pending_signal_sema();
+  // Physical Vita r10 captured an eight-byte FILEIO reply with mode 1.
+  memory.write32(kResult + 4u, 0xA5A5A5A5u);
+  require(file_call(4u, 12u, 1u, 8u) &&
+              memory.read32(kResult) == 0u &&
+              memory.read32(kResult + 4u) == 0u &&
+              services.last_rpc_call().recv_size == 8u &&
+              services.last_rpc_call().reject_flags == 0u &&
+              services.fileio_request_count() == 3u,
+          "eight-byte FILEIO reply returns actual status and zeroed padding");
+  services.take_pending_signal_sema();
+  require(!file_call(4u, 12u, 1u, 6u) &&
+              (services.last_rpc_call().reject_flags & 4u) != 0u &&
+              services.fileio_request_count() == 3u,
+          "mis-sized FILEIO response remains an explicit rejection");
 
   memory.iop_write32(kFileBuf, 3u);
   memory.iop_write32(kFileBuf + 4u, kDestination);
