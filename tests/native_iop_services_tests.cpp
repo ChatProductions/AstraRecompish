@@ -235,14 +235,15 @@ int main() {
   const auto file_call = [&](std::uint32_t function, std::uint32_t size,
                              std::uint32_t mode = 1u,
                              std::uint32_t reply_size = 4u,
-                             std::uint32_t reply_address = kResult) {
+                             std::uint32_t reply_address = 0u) {
     memory.write32(kOriginalPacket + 16u, 5u);
     packet(memory, 0x8000000Au, 0u, 0u, 64u);
     memory.iop_write32(kReceiver + 20u, kOriginalPacket);
     memory.iop_write32(kReceiver + 28u, kObservedFileioClient);
     memory.iop_write32(kReceiver + 32u, function);
     memory.iop_write32(kReceiver + 36u, size);
-    memory.iop_write32(kReceiver + 40u, reply_address);
+    memory.iop_write32(kReceiver + 40u,
+                       reply_address == 0u ? kResult : reply_address);
     memory.iop_write32(kReceiver + 44u, reply_size);
     memory.iop_write32(kReceiver + 48u, mode);
     memory.iop_write32(kReceiver + 52u, 0x001E3000u);
