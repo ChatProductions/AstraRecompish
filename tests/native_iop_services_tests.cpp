@@ -258,18 +258,22 @@ int main() {
   const auto file_call = [&](std::uint32_t function, std::uint32_t size,
                              std::uint32_t mode = 1u,
                              std::uint32_t reply_size = 4u,
-                             std::uint32_t reply_address = 0u) {
+                             std::uint32_t reply_address = 0u,
+                             std::uint32_t client_override = 0u,
+                             std::uint32_t server_override = 0u) {
     memory.write32(kOriginalPacket + 16u, 5u);
     packet(memory, 0x8000000Au, 0u, 0u, 64u);
     memory.iop_write32(kReceiver + 20u, kOriginalPacket);
-    memory.iop_write32(kReceiver + 28u, kObservedFileioClient);
+    memory.iop_write32(kReceiver + 28u, client_override == 0u
+                       ? kObservedFileioClient : client_override);
     memory.iop_write32(kReceiver + 32u, function);
     memory.iop_write32(kReceiver + 36u, size);
     memory.iop_write32(kReceiver + 40u,
                        reply_address == 0u ? kResult : reply_address);
     memory.iop_write32(kReceiver + 44u, reply_size);
     memory.iop_write32(kReceiver + 48u, mode);
-    memory.iop_write32(kReceiver + 52u, 0x001E3000u);
+    memory.iop_write32(kReceiver + 52u, server_override == 0u
+                       ? 0x001E3000u : server_override);
     return services.receive(memory, kReceiver, 64u, kCmdDataEe);
   };
   constexpr char kName[] = "host:NFS\\TEST.BIN";
@@ -396,6 +400,41 @@ int main() {
               memory.read32(kResult) == 0xBAD0C0DEu &&
               services.take_pending_signal_sema() == 0u,
           "unverified retail OPEN ABI rejects without host-file or reply side effects");
+  // A matching DMA is not enough: a forged client, wrong server, or
+  // invalid reply destination must not turn untrusted IOP RAM into
+  // diagnostic evidence for the bound retail FILEIO request.
+  constexpr std::uint32_t kForgedClient = kObservedFileioClient + 0x100u;
+  memory.write32(kForgedClient + 8u, 15u);
+  require(services.receive(memory, kFileBuf, 1048u, kCmdDataEe,
+                           0x005CF6C0u) &&
+              !file_call(0u, 1048u, 1u, 4u, 0u, kForgedClient) &&
+              (services.last_rpc_call().reject_flags & 1u) != 0u &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu &&
+              services.last_rpc_call().fileio_dma_exact == 1u &&
+              memory.read32(kResult) == 0xBAD0C0DEu && files.opens == 1,
+          "forged FILEIO client cannot produce path-shape evidence");
+  require(services.receive(memory, kFileBuf, 1048u, kCmdDataEe,
+                           0x005CF6C0u) &&
+              !file_call(0u, 1048u, 1u, 4u, 0u, 0u, 0x001E1000u) &&
+              (services.last_rpc_call().reject_flags & 2u) != 0u &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu &&
+              services.last_rpc_call().fileio_dma_exact == 1u &&
+              memory.read32(kResult) == 0xBAD0C0DEu && files.opens == 1,
+          "wrong FILEIO server cannot produce path-shape evidence");
+  require(services.receive(memory, kFileBuf, 1048u, kCmdDataEe,
+                           0x005CF6C0u) &&
+              !file_call(0u, 1048u, 1u, 8u, kLastEeWord) &&
+              services.last_rpc_call().fileio_open_pathlike_count == 0u &&
+              services.last_rpc_call().fileio_open_first_pathlike_offset ==
+                  0xFFFFFFFFu &&
+              services.last_rpc_call().fileio_dma_exact == 1u &&
+              memory.read32(kLastEeWord) == 0x0BADC0DEu &&
+              memory.read32(kResult) == 0xBAD0C0DEu && files.opens == 1,
+          "invalid FILEIO reply buffer cannot produce path-shape evidence");
   // A different synthetic 1048-byte layout must report its own structural
   // offset, not assume that the PS2SDK 272-byte prefix is the retail ABI.
   for (unsigned i = 0; i < 1048u; ++i)
