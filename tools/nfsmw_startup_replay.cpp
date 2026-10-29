@@ -15,12 +15,12 @@
 // Vita log fields. Never print payload bytes or private game file contents.
 void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
   const auto& rpc = services.last_rpc_call();
-  std::printf("rpc_packet_size=%u\\nrpc_client=%08X\\nrpc_bound_fileio_client=%08X\\n"
-              "rpc_server=%08X\\nrpc_function=%u\\nrpc_send_size=%u\\n"
-              "rpc_recvbuf=%08X\\nrpc_recv_size=%u\\nrpc_mode=%u\\n"
-              "rpc_original_packet=%08X\\nrpc_semaphore=%u\\n"
-              "rpc_fileio_candidate=%u\\nrpc_reject_flags=%u\\n"
-              "fileio_binds=%u\\nfileio_calls=%u\\nfileio_bytes_read=%u\\n",
+  std::printf("rpc_packet_size=%u\nrpc_client=%08X\nrpc_bound_fileio_client=%08X\n"
+              "rpc_server=%08X\nrpc_function=%u\nrpc_send_size=%u\n"
+              "rpc_recvbuf=%08X\nrpc_recv_size=%u\nrpc_mode=%u\n"
+              "rpc_original_packet=%08X\nrpc_semaphore=%u\n"
+              "rpc_fileio_candidate=%u\nrpc_reject_flags=%u\n"
+              "fileio_binds=%u\nfileio_calls=%u\nfileio_bytes_read=%u\n",
               rpc.packet_size, rpc.client, rpc.bound_fileio_client,
               rpc.server, rpc.function, rpc.send_size, rpc.recvbuf,
               rpc.recv_size, rpc.mode, rpc.original_packet, rpc.sema,
