@@ -80,6 +80,12 @@ IopStopReason IopCpu::step() {
   const unsigned old_load_register = pending_load_register_;
   const auto old_load_value = pending_load_value_;
   load_pending_ = false;
+  // MIPS I permits adjacent LWL/LWR loads to the same register. Their
+  // merge input is the preceding pending load, even though ordinary ALU
+  // instructions in the load delay slot still read the old GPR value.
+  const unsigned rt = (instruction >> 16) & 31u;
+  const auto merge_load_value = commits_load && old_load_register == rt
+      ? old_load_value : state_.gpr[rt];
   const bool applies_pending_branch = branch_pending_;
   const auto old_target = pending_target_;
   bool schedules_branch = false;
@@ -87,7 +93,8 @@ IopStopReason IopCpu::step() {
   std::uint32_t new_target = 0;
   std::uint32_t exception_code = 0;
   const bool known = execute(instruction, pc, schedules_branch, new_target,
-                             skips_delay_slot, exception_code);
+                             skips_delay_slot, exception_code,
+                             merge_load_value);
   if (commits_load) set_reg(old_load_register, old_load_value);
   state_.gpr[0] = 0;
   ++state_.cycles;
@@ -118,7 +125,8 @@ IopStopReason IopCpu::run(std::uint32_t instruction_budget) {
 
 bool IopCpu::execute(std::uint32_t ins, std::uint32_t pc, bool& schedules,
                      std::uint32_t& target, bool& skips,
-                     std::uint32_t& exception) {
+                     std::uint32_t& exception,
+                     std::uint32_t merge_load_value) {
   const unsigned op = ins >> 26;
   const unsigned rs = (ins >> 21) & 31u;
   const unsigned rt = (ins >> 16) & 31u;
@@ -251,7 +259,8 @@ bool IopCpu::execute(std::uint32_t ins, std::uint32_t pc, bool& schedules,
   case 0x22: { const auto a = effective(rsv, ins); const auto aligned = a & ~3u;
       const unsigned shift = (a & 3u) * 8u;
       const auto mask = 0x00FFFFFFu >> shift;
-      schedule_load(rt, (rtv & mask) | (memory_.iop_read32(aligned) << (24u - shift))); break; }
+      schedule_load(rt, (merge_load_value & mask) |
+          (memory_.iop_read32(aligned) << (24u - shift))); break; }
   case 0x23: { const auto a = effective(rsv, ins); if (a & 3u) { exception = 4; fault_address_ = a; break; }
       schedule_load(rt, memory_.iop_read32(a)); break; }
   case 0x24: { const auto a = effective(rsv, ins); schedule_load(rt, memory_.iop_read8(a)); break; }
@@ -260,7 +269,8 @@ bool IopCpu::execute(std::uint32_t ins, std::uint32_t pc, bool& schedules,
   case 0x26: { const auto a = effective(rsv, ins); const auto aligned = a & ~3u;
       const unsigned shift = (a & 3u) * 8u;
       const auto mask = 0xFFFFFF00u << (24u - shift);
-      schedule_load(rt, (rtv & mask) | (memory_.iop_read32(aligned) >> shift)); break; }
+      schedule_load(rt, (merge_load_value & mask) |
+          (memory_.iop_read32(aligned) >> shift)); break; }
   case 0x28: { const auto a = effective(rsv, ins); write_memory(a, [&] {
       memory_.iop_write8(a, static_cast<std::uint8_t>(rtv)); }); break; }
   case 0x29: { const auto a = effective(rsv, ins); if (a & 1u) { exception = 5; fault_address_ = a; break; }
