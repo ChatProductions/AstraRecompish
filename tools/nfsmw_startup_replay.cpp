@@ -1,6 +1,7 @@
 // Host-only startup replay for a privately supplied title ELF.
 // No game image or translated game code is committed or packaged with this tool.
 #include "ps2vita/emulator.hpp"
+#include "ps2vita/ioprp_image.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -26,30 +27,72 @@ void print_native_rpc_diagnostics(const ps2vita::NativeIopServices& services) {
               rpc.recv_size, rpc.mode, rpc.original_packet, rpc.sema,
               rpc.fileio_candidate, rpc.reject_flags,
               services.fileio_bind_count(), services.fileio_request_count(),
-              services.fileio_total_read());
-}
-
-int main(int argc, char** argv) {
-  if (argc < 2 || argc > 4) {
-    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop]\n");
+             int main(int argc, char** argv) {
+  if (argc < 2 || argc > 6) {
+    std::fprintf(stderr, "usage: nfsmw_startup_replay <private boot.elf> [max_cycles] [--native-iop] [--ioprp <external image>]\n");
     return 2;
   }
   std::uint64_t limit = 12000000u;
+  bool limit_set = false;
   bool native_iop = false;
-  if (argc >= 3 && argv[2][0] == '-') {
-    if (argc != 3 || std::strcmp(argv[2], "--native-iop") != 0) return 2;
-    native_iop = true;
-  } else if (argc >= 3) {
-    char* end = nullptr;
-    limit = std::strtoull(argv[2], &end, 10);
-    if (*argv[2] == '\0' || *end != '\0' || limit == 0u ||
-        limit > 100000000u) {
-      std::fprintf(stderr, "invalid max_cycles (1 to 100000000)\n");
+  const char* ioprp_path = nullptr;
+  for (int i = 2; i < argc; ++i) {
+    if (std::strcmp(argv[i], "--native-iop") == 0 && !native_iop) {
+      native_iop = true;
+    } else if (std::strcmp(argv[i], "--ioprp") == 0 &&
+               ioprp_path == nullptr && i + 1 < argc) {
+      ioprp_path = argv[++i];
+    } else if (!limit_set && argv[i][0] != '-') {
+      char* end = nullptr;
+      limit = std::strtoull(argv[i], &end, 10);
+      if (*argv[i] == '\0' || *end != '\0' || limit == 0u ||
+          limit > 100000000u) {
+        std::fprintf(stderr, "invalid max_cycles (1 to 100000000)\n");
+        return 2;
+      }
+      limit_set = true;
+    } else {
+      std::fprintf(stderr, "invalid or repeated replay argument\n");
       return 2;
     }
   }
-  if (argc == 4) {
-    if (std::strcmp(argv[3], "--native-iop") != 0) return 2;
+  if (ioprp_path && (!native_iop || *ioprp_path == '\0')) {
+    std::fprintf(stderr, "--ioprp requires --native-iop and an image path\n");
+    return 2;
+  }
+
+  // External, read-only IOPRP validation mirrors the Vita frontend.
+  // This enables only a bounded native service reboot, not execution
+  // or extraction of proprietary IOP modules.
+  ps2vita::IoprpSummary ioprp{};
+  if (ioprp_path) {
+    std::ifstream image_file(ioprp_path, std::ios::binary | std::ios::ate);
+    if (!image_file) {
+      std::fprintf(stderr, "cannot open external IOPRP image\n");
+      return 2;
+    }
+    const auto image_size = image_file.tellg();
+    if (image_size < 48 || image_size > 32 * 1024 * 1024) {
+      std::fprintf(stderr, "external IOPRP size invalid\n");
+      return 2;
+    }
+    image_file.seekg(0, std::ios::beg);
+    const std::vector<char> image_bytes(
+        std::istreambuf_iterator<char>{image_file}, {});
+    if (image_bytes.size() != static_cast<std::size_t>(image_size)) {
+      std::fprintf(stderr, "external IOPRP read incomplete\n");
+      return 2;
+    }
+    ioprp = ps2vita::inspect_ioprp_image(
+        image_bytes.data(), image_bytes.size());
+    if (!ioprp.valid || !ioprp.has_sifcmd || !ioprp.has_cdvd) {
+      std::fprintf(stderr, "external IOPRP rejected: %s (SIFCMD=%u CDVD=%u)\n",
+                   ioprp.error, ioprp.has_sifcmd ? 1u : 0u,
+                   ioprp.has_cdvd ? 1u : 0u);
+      return 2;
+    }
+  }
+turn 2;
     native_iop = true;
   }
   std::ifstream file(argv[1], std::ios::binary);
@@ -66,8 +109,12 @@ int main(int argc, char** argv) {
   }
   emulator->enable_bare_elf_startup_syscalls(true);
   emulator->enable_native_iop_services(native_iop);
-  std::printf("replay=host-interpreter-only\nnative_iop=%u\nentry=%08X\n",
-              native_iop ? 1u : 0u, loaded.entry);
+  if (ioprp_path) emulator->enable_verified_ioprp_reboot(true);
+  std::printf("replay=host-interpreter-only\nnative_iop=%u\nentry=%08X\n"
+              "ioprp_valid=%u\nioprp_entries=%u\nioprp_padding_missing=%u\n",
+              native_iop ? 1u : 0u, loaded.entry,
+              ioprp.valid ? 1u : 0u, ioprp.entries,
+              ioprp.final_missing_padding);
   std::uint64_t next_progress = 1000000u;
   std::uint32_t last_deci2_count = 0u;
   unsigned sifcmd_wait_samples = 0u;
