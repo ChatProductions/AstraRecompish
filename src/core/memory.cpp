@@ -1357,12 +1357,15 @@ std::uint8_t Memory::iop_read8(std::uint32_t address) const {
   if (p >= 0x1D000000u && p <= 0x1D000063u) {
     const auto slot = p & 0x70u;
     if (slot <= 0x60u) {
-      // IOP SBUS control exposes fixed hardware-ready/status bits.
-      // PCSX2's IOP MMIO contract reports F0000002 on 0x1D000040
-      // in addition to the EE-visible writable register contents.
-      // Without these bits, retail IOP firmware can stall before SIFCMD.
-      const auto word = read32(0x1000F200u + slot) |
-          (slot == 0x40u ? 0xF0000002u : 0u);
+      // The IOP and EE expose different fixed bits for SBUS control:
+      // IOP reads report F0000002; EE reads report F0000102.
+      // Read shared storage directly to avoid inheriting EE-only bit 8.
+      const auto offset = 0xF200u + slot;
+      const auto raw = static_cast<std::uint32_t>(hw_[offset]) |
+          (static_cast<std::uint32_t>(hw_[offset + 1u]) << 8u) |
+          (static_cast<std::uint32_t>(hw_[offset + 2u]) << 16u) |
+          (static_cast<std::uint32_t>(hw_[offset + 3u]) << 24u);
+      const auto word = raw | (slot == 0x40u ? 0xF0000002u : 0u);
       return static_cast<std::uint8_t>(word >> ((p & 3u) * 8u));
     }
   }
