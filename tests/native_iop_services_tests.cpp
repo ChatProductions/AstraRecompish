@@ -203,6 +203,12 @@ int main() {
 
   // FILEIO service after a completed reboot. The host mock supplies actual
   // bytes; no game asset is invented or embedded in the native implementation.
+  // Final r10 hardware telemetry: FILEIO client 0x005D0DC0, semaphore 14,
+  // server 0x001E3000, NOWAIT mode 1, and an 8-byte receive buffer.
+  // The operation and send payload were not captured. TestFiles supplies
+  // synthetic operation data; this is not a replay of private game bytes.
+  constexpr std::uint32_t kObservedFileioClient = 0x005D0DC0u;
+  memory.write32(kObservedFileioClient + 8u, 14u);
   TestFiles files;
   services.set_file_backend(&files);
   packet(memory, 0x80000002u, 0u, kEeReceive, 20u);
@@ -214,28 +220,29 @@ int main() {
   memory.write32(kOriginalPacket + 16u, 5u);
   packet(memory, 0x80000009u, 0u, 0u, 64u);
   memory.iop_write32(kReceiver + 20u, kOriginalPacket);
-  memory.iop_write32(kReceiver + 28u, kClient);
+  memory.iop_write32(kReceiver + 28u, kObservedFileioClient);
   memory.iop_write32(kReceiver + 32u, 0x80000001u);
   require(services.receive(memory, kReceiver, 64u, kCmdDataEe) &&
-              memory.read32(kClient + 36u) == 0x001E3000u &&
-              memory.read32(kClient + 20u) == 0x001E4000u &&
-              services.fileio_bind_count() == 1u,
+              memory.read32(kObservedFileioClient + 36u) == 0x001E3000u &&
+              memory.read32(kObservedFileioClient + 20u) == 0x001E4000u &&
+              services.fileio_bind_count() == 1u &&
+              services.take_pending_signal_sema() == 14u,
           "FILEIO RPC binds only with an installed native backend");
-  services.take_pending_signal_sema();
 
   constexpr std::uint32_t kFileBuf = 0x001E4000u;
   constexpr std::uint32_t kDestination = 0x5A01u; // deliberately unaligned
   constexpr std::uint32_t kCompletion = 0x5B00u;
   const auto file_call = [&](std::uint32_t function, std::uint32_t size,
                              std::uint32_t mode = 1u,
-                             std::uint32_t reply_size = 4u) {
+                             std::uint32_t reply_size = 4u,
+                             std::uint32_t reply_address = kResult) {
     memory.write32(kOriginalPacket + 16u, 5u);
     packet(memory, 0x8000000Au, 0u, 0u, 64u);
     memory.iop_write32(kReceiver + 20u, kOriginalPacket);
-    memory.iop_write32(kReceiver + 28u, kClient);
+    memory.iop_write32(kReceiver + 28u, kObservedFileioClient);
     memory.iop_write32(kReceiver + 32u, function);
     memory.iop_write32(kReceiver + 36u, size);
-    memory.iop_write32(kReceiver + 40u, kResult);
+    memory.iop_write32(kReceiver + 40u, reply_address);
     memory.iop_write32(kReceiver + 44u, reply_size);
     memory.iop_write32(kReceiver + 48u, mode);
     memory.iop_write32(kReceiver + 52u, 0x001E3000u);
@@ -253,7 +260,8 @@ int main() {
   require(services.last_rpc_call().reject_flags == 0u &&
               services.last_rpc_call().function == 0u &&
               services.last_rpc_call().server == 0x001E3000u &&
-              services.last_rpc_call().bound_fileio_client == kClient,
+              services.last_rpc_call().bound_fileio_client == kObservedFileioClient &&
+              services.last_rpc_call().sema == 14u,
           "successful FILEIO call captures the real RPC fields");
   require(!file_call(1u, 4u, 2u) &&
               (services.last_rpc_call().reject_flags & 8u) != 0u &&
@@ -276,14 +284,27 @@ int main() {
               memory.read32(kResult) == 0u &&
               memory.read32(kResult + 4u) == 0u &&
               services.last_rpc_call().recv_size == 8u &&
+              services.last_rpc_call().mode == 1u &&
+              services.last_rpc_call().sema == 14u &&
+              services.last_rpc_call().server == 0x001E3000u &&
               services.last_rpc_call().reject_flags == 0u &&
               services.fileio_request_count() == 3u,
           "eight-byte FILEIO reply returns actual status and zeroed padding");
-  services.take_pending_signal_sema();
+  require(services.take_pending_signal_sema() == 14u,
+          "r10 FILEIO NOWAIT completion signals observed semaphore 14");
   require(!file_call(4u, 12u, 1u, 6u) &&
               (services.last_rpc_call().reject_flags & 4u) != 0u &&
               services.fileio_request_count() == 3u,
           "mis-sized FILEIO response remains an explicit rejection");
+  // A valid 4-byte word at the end of EE RAM cannot host an 8-byte reply.
+  // Rejection must precede the operation and preserve the existing word.
+  constexpr std::uint32_t kLastEeWord = 0x01FFFFFCu;
+  memory.write32(kLastEeWord, 0x0BADC0DEu);
+  require(!file_call(4u, 12u, 1u, 8u, kLastEeWord) &&
+              services.last_rpc_call().reject_flags == 128u &&
+              services.fileio_request_count() == 3u &&
+              memory.read32(kLastEeWord) == 0x0BADC0DEu,
+          "eight-byte FILEIO reply rejects a buffer crossing the EE RAM boundary");
 
   memory.iop_write32(kFileBuf, 3u);
   memory.iop_write32(kFileBuf + 4u, kDestination);
