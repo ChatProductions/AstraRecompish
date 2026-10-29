@@ -109,8 +109,11 @@ bool NativeIopServices::execute_fileio(
   // PS2SDK fileio-common.h: RPC fno 0=open, 1=close, 2=read,
   // 3=write, 4=lseek. Arguments were copied by the EE to our IOP-side
   // RPC buffer through a separate SIF DMA operation.
-  if (!file_backend_ || recv_size != 4u ||
-      !ee_pointer_valid(memory, recvbuf, 4u) ||
+  // Retail SIFRPC clients may reserve two result words even when FILEIO
+  // returns one signed 32-bit status. The r10 Vita trace observed 8 bytes.
+  // Accept exactly 4 or 8 and validate the whole requested buffer.
+  if (!file_backend_ || (recv_size != 4u && recv_size != 8u) ||
+      !ee_pointer_valid(memory, recvbuf, recv_size) ||
       send_size > 4096u ||
       !memory.iop_valid(kFileioServerBuffer, send_size)) return false;
   ++fileio_request_count_;
@@ -223,6 +226,9 @@ bool NativeIopServices::execute_fileio(
   }
   fileio_last_result_ = answer;
   memory.write32(recvbuf, static_cast<std::uint32_t>(answer));
+  // There is no defined second result word for the supported operations.
+  // Return zero padding rather than leaking stale guest memory.
+  if (recv_size == 8u) memory.write32(recvbuf + 4u, 0u);
   return true;
 }
 
@@ -377,7 +383,7 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
       last_rpc_call_.reject_flags =
           (client != bound_fileio_client_ ? 1u : 0u) |
           (server != kFileioServerHandle ? 2u : 0u) |
-          (recv_size != 4u ? 4u : 0u) |
+          ((recv_size != 4u && recv_size != 8u) ? 4u : 0u) |
           (mode > 1u ? 8u : 0u) |
           (!ee_pointer_valid(memory, original_pkt, 28u) ? 16u : 0u) |
           (last_rpc_call_.sema == 0u || last_rpc_call_.sema > 64u ? 32u : 0u) |
@@ -393,7 +399,7 @@ bool NativeIopServices::receive(Memory& memory, std::uint32_t destination,
       const auto sema = last_rpc_call_.sema;
       // SIF RPC rmode is 0 for blocking calls and 1 for NOWAIT.
       // Both are valid; retain all other FILEIO validation.
-      if (recv_size != 4u || mode > 1u ||
+      if ((recv_size != 4u && recv_size != 8u) || mode > 1u ||
           !ee_pointer_valid(memory, original_pkt, 28u) ||
           sema == 0u || sema > 64u ||
           !execute_fileio(memory, rpc_number, send_size,
