@@ -688,6 +688,24 @@ int main() {
               bios_model.native_iop_services().command_count() == 0u,
           "host SIF1 copies guest bytes and raises the IOP DMA IRQ without HLE");
 
+  // An IRQ flag alone is not enough: the firmware must see the interrupt
+  // only after I_MASK, I_CTRL and the R3000A CP0 interrupt mask are enabled.
+  // Exercise the actual IOP CPU exception path, not just the MMIO flags.
+  bios_model.iop().state().cop0[12] |= 0x00000401u;
+  require(bios_model.run_slice(7u) == ps2vita::StopReason::StepLimit &&
+              bios_model.iop().state().cycles == 2u &&
+              bios_model.iop().state().pc == 0xBFC00008u,
+          "SIF1 DMA completion stays masked until firmware enables IOP IRQ");
+  bios_memory.iop_write32(0x1F801074u, 1u << 3u); // I_MASK DMA channel.
+  bios_memory.iop_write32(0x1F801078u, 1u);       // I_CTRL master enable.
+  require(bios_model.run_slice(8u) == ps2vita::StopReason::StepLimit &&
+              bios_model.iop().state().cycles == 3u &&
+              bios_model.iop().state().pc == 0xBFC00180u &&
+              bios_model.iop().state().cop0[14] == 0xBFC00008u &&
+              (bios_model.iop().state().cop0[13] & 0x00000400u) != 0u &&
+              bios_model.native_iop_services().command_count() == 0u,
+          "unmasked host SIF1 completion enters real IOP BIOS interrupt vector");
+
   bios_model.reset();
   require(bios_model.bios_iop_for_elf_enabled() &&
               bios_model.iop().state().pc == 0xBFC00000u,
